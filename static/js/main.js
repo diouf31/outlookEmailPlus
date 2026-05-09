@@ -457,6 +457,7 @@
             if (page === 'settings') loadSettings();
             if (page === 'refresh-log') loadRefreshLogPage();
             if (page === 'audit') loadAuditLogPage();
+            if (page === 'users' && typeof loadUsersPage === 'function') loadUsersPage();
         }
 
         function updateTopbar(page) {
@@ -470,7 +471,8 @@
                 'temp-emails': ['临时邮箱', '创建和管理临时邮箱'],
                 'refresh-log': ['刷新日志', 'Token 刷新历史记录'],
                 'settings': ['系统设置', '配置系统参数'],
-                'audit': ['审计日志', '系统操作记录']
+                'audit': ['审计日志', '系统操作记录'],
+                'users': ['用户管理', '账号列表与密码管理']
             };
             const t = titles[page] || [page, ''];
             if (titleEl) titleEl.textContent = translateAppTextLocal(t[0]);

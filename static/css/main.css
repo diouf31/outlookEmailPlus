@@ -2435,3 +2435,18 @@ tr:hover td { background: rgba(184,92,56,0.04); }
     display: block;
   }
 }
+
+/* ===== 用户管理 ===== */
+.btn-outline {
+  background: transparent; color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+.btn-outline:hover:not(:disabled) { background: var(--border-light); color: var(--text); border-color: var(--clr-primary-light); }
+
+.badge-role {
+  display: inline-block; padding: 2px 8px; border-radius: 999px;
+  font-size: 0.72rem; font-weight: 600; white-space: nowrap;
+}
+.badge-admin { background: rgba(184,92,56,0.15); color: var(--clr-primary); border: 1px solid rgba(184,92,56,0.3); }
+.badge-user  { background: rgba(0,0,0,0.05);     color: var(--text-muted);  border: 1px solid var(--border); }
+[data-theme="dark"] .badge-user { background: rgba(255,255,255,0.07); }
