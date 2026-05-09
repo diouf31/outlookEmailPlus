@@ -6,7 +6,7 @@ from typing import Any
 from flask import g, jsonify, redirect, render_template, request, send_from_directory, session, url_for
 
 from outlook_web.errors import build_error_payload
-from outlook_web.repositories import settings as settings_repo
+from outlook_web.repositories import users as users_repo
 from outlook_web.security.auth import (
     check_rate_limit,
     get_client_ip,
@@ -14,7 +14,6 @@ from outlook_web.security.auth import (
     record_login_failure,
     reset_login_attempts,
 )
-from outlook_web.security.crypto import verify_password
 
 # ==================== 页面路由 ====================
 
@@ -23,10 +22,8 @@ def login() -> Any:
     """登录页面"""
     if request.method == "POST":
         try:
-            # 获取客户端 IP
             client_ip = get_client_ip()
 
-            # 检查速率限制
             allowed, remaining_time = check_rate_limit(client_ip)
             if not allowed:
                 trace_id_value = None
@@ -45,21 +42,23 @@ def login() -> Any:
                 return jsonify({"success": False, "error": error_payload}), 429
 
             data = request.json if request.is_json else request.form
+            username = (data.get("username") or "").strip()
             password = data.get("password", "")
 
-            # 从数据库获取密码哈希
-            stored_password = settings_repo.get_login_password()
+            if not username:
+                return jsonify({"success": False, "error": {"code": "LOGIN_INVALID_CREDENTIALS", "message": "请输入用户名", "status": 401}}), 401
 
-            # 验证密码
-            if verify_password(password, stored_password):
-                # 登录成功，重置失败记录
+            user = users_repo.validate_login(username, password)
+
+            if user:
                 reset_login_attempts(client_ip)
-                session["logged_in"] = True
+                session["user_id"] = user["id"]
+                session["username"] = user["username"]
+                session["user_role"] = user["role"]
                 session.permanent = True
-                session.modified = True  # 确保 Flask-Session 保存 session
+                session.modified = True
                 return jsonify({"success": True, "message": "登录成功"})
             else:
-                # 登录失败，记录失败次数
                 record_login_failure(client_ip)
                 trace_id_value = None
                 try:
@@ -67,9 +66,9 @@ def login() -> Any:
                 except Exception:
                     trace_id_value = None
                 error_payload = build_error_payload(
-                    code="LOGIN_INVALID_PASSWORD",
-                    message="密码错误",
-                    message_en="Invalid password",
+                    code="LOGIN_INVALID_CREDENTIALS",
+                    message="用户名或密码错误",
+                    message_en="Invalid username or password",
                     err_type="AuthError",
                     status=401,
                     details=f"ip={client_ip}",
@@ -98,13 +97,14 @@ def login() -> Any:
             )
             return jsonify({"success": False, "error": error_payload}), 500
 
-    # GET 请求返回登录页面
     return render_template("login.html")
 
 
 def logout() -> Any:
     """退出登录"""
-    session.pop("logged_in", None)
+    session.pop("user_id", None)
+    session.pop("username", None)
+    session.pop("user_role", None)
     return redirect(url_for("pages.login"))
 
 

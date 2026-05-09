@@ -142,12 +142,29 @@ def reset_login_attempts(ip: str):
         pass
 
 
+def get_current_user_id() -> Optional[int]:
+    """获取当前登录用户 ID。在非请求上下文（后台任务）中返回 None。"""
+    try:
+        uid = getattr(g, "current_user_id", None)
+        return int(uid) if uid is not None else None
+    except (RuntimeError, TypeError, ValueError):
+        return None
+
+
+def get_current_user_role() -> Optional[str]:
+    """获取当前登录用户角色（admin/user），未登录返回 None。"""
+    try:
+        return getattr(g, "current_user_role", None)
+    except RuntimeError:
+        return None
+
+
 def login_required(f):
     """登录验证装饰器"""
 
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        is_logged_in = bool(session.get("logged_in") or session.get("user_id"))
+        is_logged_in = bool(session.get("user_id"))
         if not is_logged_in:
             if request.is_json or request.path.startswith("/api/"):
                 trace_id_value = None
@@ -168,6 +185,29 @@ def login_required(f):
                     401,
                 )
             return redirect(url_for("pages.login"))
+        return f(*args, **kwargs)
+
+    return decorated_function
+
+
+def admin_required(f):
+    """管理员权限装饰器（内嵌 login_required）"""
+
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        is_logged_in = bool(session.get("user_id"))
+        if not is_logged_in:
+            if request.is_json or request.path.startswith("/api/"):
+                return (
+                    jsonify({"success": False, "error": {"code": "AUTH_REQUIRED", "message": "请先登录", "status": 401}, "need_login": True}),
+                    401,
+                )
+            return redirect(url_for("pages.login"))
+        if get_current_user_role() != "admin":
+            return (
+                jsonify({"success": False, "error": {"code": "FORBIDDEN", "message": "无权限，仅管理员可操作", "status": 403}}),
+                403,
+            )
         return f(*args, **kwargs)
 
     return decorated_function

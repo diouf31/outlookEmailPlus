@@ -13,7 +13,8 @@ from outlook_web.db import get_db
 from outlook_web.errors import build_error_payload
 from outlook_web.repositories import external_api_keys as external_api_keys_repo
 from outlook_web.repositories import settings as settings_repo
-from outlook_web.security.auth import login_required
+from outlook_web.repositories import users as users_repo
+from outlook_web.security.auth import get_current_user_id, login_required
 from outlook_web.security.crypto import (
     decrypt_data,
     encrypt_data,
@@ -495,7 +496,7 @@ def api_update_settings() -> Any:
                 queue_setting_update("webhook_notification_token", "")
                 updated.append("Webhook Token（已清空）")
 
-    # 更新登录密码
+    # 更新登录密码（改为更新 users 表）
     if "login_password" in data:
         new_password = data["login_password"].strip()
         if new_password:
@@ -509,10 +510,11 @@ def api_update_settings() -> Any:
             if len(new_password) < 8:
                 errors.append("密码长度至少为 8 位")
             else:
-                # 哈希新密码
-                hashed_password = hash_password(new_password)
-                queue_setting_update("login_password", hashed_password)
-                updated.append("登录密码")
+                current_uid = get_current_user_id()
+                if current_uid and users_repo.update_user_password(current_uid, new_password):
+                    updated.append("登录密码")
+                else:
+                    errors.append("密码修改失败")
 
     # 更新临时邮箱配置
     if "temp_mail_provider" in data:

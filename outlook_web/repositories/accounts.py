@@ -4,6 +4,7 @@ import sqlite3
 from typing import Any, Dict, List, Optional, Tuple
 
 from outlook_web.db import get_db
+from outlook_web.security.auth import get_current_user_id
 from outlook_web.security.crypto import decrypt_data, encrypt_data
 
 COMPACT_SUMMARY_FIELDS = (
@@ -108,24 +109,49 @@ def _hydrate_accounts(rows: List[sqlite3.Row], db: sqlite3.Connection) -> List[D
 def load_accounts(group_id: int = None) -> List[Dict]:
     """从数据库加载邮箱账号（自动解密敏感字段，批量加载 tags 避免 N+1）"""
     db = get_db()
+    user_id = get_current_user_id()
     if group_id:
-        cursor = db.execute(
-            """
-            SELECT a.*, g.name as group_name, g.color as group_color
-            FROM accounts a
-            LEFT JOIN groups g ON a.group_id = g.id
-            WHERE a.group_id = ?
-            ORDER BY a.created_at DESC
-        """,
-            (group_id,),
-        )
+        if user_id:
+            cursor = db.execute(
+                """
+                SELECT a.*, g.name as group_name, g.color as group_color
+                FROM accounts a
+                LEFT JOIN groups g ON a.group_id = g.id
+                WHERE a.group_id = ? AND a.user_id = ?
+                ORDER BY a.created_at DESC
+            """,
+                (group_id, user_id),
+            )
+        else:
+            cursor = db.execute(
+                """
+                SELECT a.*, g.name as group_name, g.color as group_color
+                FROM accounts a
+                LEFT JOIN groups g ON a.group_id = g.id
+                WHERE a.group_id = ?
+                ORDER BY a.created_at DESC
+            """,
+                (group_id,),
+            )
     else:
-        cursor = db.execute("""
-            SELECT a.*, g.name as group_name, g.color as group_color
-            FROM accounts a
-            LEFT JOIN groups g ON a.group_id = g.id
-            ORDER BY a.created_at DESC
-        """)
+        if user_id:
+            cursor = db.execute(
+                """
+                SELECT a.*, g.name as group_name, g.color as group_color
+                FROM accounts a
+                LEFT JOIN groups g ON a.group_id = g.id
+                WHERE a.user_id = ?
+                ORDER BY a.created_at DESC
+            """,
+                (user_id,),
+            )
+        else:
+            cursor = db.execute("""
+                SELECT a.*, g.name as group_name, g.color as group_color
+                FROM accounts a
+                LEFT JOIN groups g ON a.group_id = g.id
+                ORDER BY a.created_at DESC
+            """)
     rows = cursor.fetchall()
     return _hydrate_accounts(rows, db)
 
@@ -135,9 +161,14 @@ def _build_account_list_where(
     group_id: Optional[int],
     search: str,
     tag_ids: List[int],
+    user_id: Optional[int] = None,
 ) -> Tuple[str, List[Any]]:
     where_clauses: List[str] = []
     params: List[Any] = []
+
+    if user_id is not None:
+        where_clauses.append("a.user_id = ?")
+        params.append(user_id)
 
     if group_id is not None:
         where_clauses.append("a.group_id = ?")
@@ -213,6 +244,7 @@ def load_accounts_page(
         group_id=group_id,
         search=search,
         tag_ids=normalized_tag_ids,
+        user_id=get_current_user_id(),
     )
     order_sql = _build_account_list_order(sort_by, sort_order)
 
@@ -249,9 +281,16 @@ def load_accounts_page(
 
 
 def get_account_by_email(email_addr: str) -> Optional[Dict]:
-    """根据邮箱地址获取账号（自动解密敏感字段）"""
+    """根据邮箱地址获取账号（自动解密敏感字段）。后台任务无 user_id 过滤。"""
     db = get_db()
-    cursor = db.execute("SELECT * FROM accounts WHERE email = ?", (email_addr,))
+    user_id = get_current_user_id()
+    if user_id:
+        cursor = db.execute(
+            "SELECT * FROM accounts WHERE email = ? AND user_id = ?",
+            (email_addr, user_id),
+        )
+    else:
+        cursor = db.execute("SELECT * FROM accounts WHERE email = ?", (email_addr,))
     row = cursor.fetchone()
     if not row:
         return None
@@ -263,17 +302,29 @@ def get_account_by_email(email_addr: str) -> Optional[Dict]:
 
 
 def get_account_by_id(account_id: int) -> Optional[Dict]:
-    """根据 ID 获取账号（含 group_name/group_color，自动解密敏感字段）"""
+    """根据 ID 获取账号（含 group_name/group_color，自动解密敏感字段）。后台任务无 user_id 过滤。"""
     db = get_db()
-    cursor = db.execute(
-        """
-        SELECT a.*, g.name as group_name, g.color as group_color
-        FROM accounts a
-        LEFT JOIN groups g ON a.group_id = g.id
-        WHERE a.id = ?
-    """,
-        (account_id,),
-    )
+    user_id = get_current_user_id()
+    if user_id:
+        cursor = db.execute(
+            """
+            SELECT a.*, g.name as group_name, g.color as group_color
+            FROM accounts a
+            LEFT JOIN groups g ON a.group_id = g.id
+            WHERE a.id = ? AND a.user_id = ?
+        """,
+            (account_id, user_id),
+        )
+    else:
+        cursor = db.execute(
+            """
+            SELECT a.*, g.name as group_name, g.color as group_color
+            FROM accounts a
+            LEFT JOIN groups g ON a.group_id = g.id
+            WHERE a.id = ?
+        """,
+            (account_id,),
+        )
     row = cursor.fetchone()
     if not row:
         return None
@@ -422,14 +473,15 @@ def add_account(
         initial_pool_status = "available" if add_to_pool else None
         email_domain = _normalize_account_email_domain(email_addr)
 
+        owner_user_id = get_current_user_id() or 1
         db.execute(
             """
             INSERT INTO accounts (
                 email, password, client_id, refresh_token,
                 account_type, provider, imap_host, imap_port, imap_password,
-                group_id, remark, pool_status, email_domain
+                group_id, remark, pool_status, email_domain, user_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
             (
                 email_addr,
@@ -445,6 +497,7 @@ def add_account(
                 remark,
                 initial_pool_status,
                 email_domain,
+                owner_user_id,
             ),
         )
         if commit:

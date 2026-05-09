@@ -37,7 +37,8 @@ from outlook_web.security.crypto import (
 # v21：2026-04-11 Outlook OAuth 验证码提取渠道记忆（accounts.preferred_verification_channel）
 # v22：2026-04-16 邮箱池项目维度成功复用（accounts.claimed_project_key + account_project_usage.success_*）
 # v23：2026-04-19 数据概览大盘（verification_extract_logs + overview 兼容字段）
-DB_SCHEMA_VERSION = 23
+# v24：多用户支持 — users 表 + accounts/groups/tags 增加 user_id 列隔离数据
+DB_SCHEMA_VERSION = 24
 DB_SCHEMA_VERSION_KEY = "db_schema_version"
 DB_SCHEMA_LAST_UPGRADE_TRACE_ID_KEY = "db_schema_last_upgrade_trace_id"
 DB_SCHEMA_LAST_UPGRADE_ERROR_KEY = "db_schema_last_upgrade_error"
@@ -166,11 +167,23 @@ def init_db(database_path: Optional[str] = None):
 
         # -------------------- Schema 创建/迁移（幂等） --------------------
 
+        # 用户表（v24）
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'user',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         # 分组表
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS groups (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT UNIQUE NOT NULL,
+                name TEXT NOT NULL,
                 description TEXT,
                 color TEXT DEFAULT '#1a1a1a',
                 proxy_url TEXT,
@@ -179,7 +192,9 @@ def init_db(database_path: Optional[str] = None):
                 verification_code_regex TEXT DEFAULT '',
                 verification_ai_enabled INTEGER DEFAULT 0,
                 verification_ai_model TEXT DEFAULT '',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                user_id INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(name, user_id)
             )
         """)
 
@@ -300,9 +315,11 @@ def init_db(database_path: Optional[str] = None):
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS tags (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT UNIQUE NOT NULL,
+                name TEXT NOT NULL,
                 color TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                user_id INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(name, user_id)
             )
             """)
 
@@ -609,16 +626,101 @@ def init_db(database_path: Optional[str] = None):
         if "trace_id" not in audit_columns:
             cursor.execute("ALTER TABLE audit_logs ADD COLUMN trace_id TEXT")
 
-        # 默认分组
+        # v24：多用户支持迁移
+        if current_version < 24:
+            # 1. 从 settings 读取现有登录密码，创建 admin 用户
+            existing_pw_row = cursor.execute("SELECT value FROM settings WHERE key = 'login_password'").fetchone()
+            if existing_pw_row and existing_pw_row[0]:
+                pw_hash_v24 = existing_pw_row[0]
+                if not is_password_hashed(pw_hash_v24):
+                    pw_hash_v24 = hash_password(pw_hash_v24)
+            else:
+                pw_hash_v24 = hash_password(login_password_default)
+            cursor.execute(
+                "INSERT OR IGNORE INTO users (username, password_hash, role) VALUES ('admin', ?, 'admin')",
+                (pw_hash_v24,),
+            )
+
+            # 2. 重建 groups 表（旧表 name UNIQUE → 新表 UNIQUE(name, user_id)）
+            groups_schema_row = cursor.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='groups'"
+            ).fetchone()
+            if groups_schema_row and "user_id" not in str(groups_schema_row[0] or ""):
+                cursor.execute("""
+                    CREATE TABLE groups_v24 (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL,
+                        description TEXT,
+                        color TEXT DEFAULT '#1a1a1a',
+                        proxy_url TEXT,
+                        is_system INTEGER DEFAULT 0,
+                        verification_code_length TEXT DEFAULT '6-6',
+                        verification_code_regex TEXT DEFAULT '',
+                        verification_ai_enabled INTEGER DEFAULT 0,
+                        verification_ai_model TEXT DEFAULT '',
+                        user_id INTEGER DEFAULT 1,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(name, user_id)
+                    )
+                """)
+                cursor.execute("""
+                    INSERT INTO groups_v24
+                        (id, name, description, color, proxy_url, is_system,
+                         verification_code_length, verification_code_regex,
+                         verification_ai_enabled, verification_ai_model, user_id, created_at)
+                    SELECT id, name, description, color, proxy_url, is_system,
+                           verification_code_length, verification_code_regex,
+                           verification_ai_enabled, verification_ai_model, 1, created_at
+                    FROM groups
+                """)
+                cursor.execute("DROP TABLE groups")
+                cursor.execute("ALTER TABLE groups_v24 RENAME TO groups")
+
+            # 3. 重建 tags 表（旧表 name UNIQUE → 新表 UNIQUE(name, user_id)）
+            tags_schema_row = cursor.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='tags'"
+            ).fetchone()
+            if tags_schema_row and "user_id" not in str(tags_schema_row[0] or ""):
+                cursor.execute("""
+                    CREATE TABLE tags_v24 (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL,
+                        color TEXT NOT NULL,
+                        user_id INTEGER DEFAULT 1,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(name, user_id)
+                    )
+                """)
+                cursor.execute("""
+                    INSERT INTO tags_v24 (id, name, color, user_id, created_at)
+                    SELECT id, name, color, 1, created_at FROM tags
+                """)
+                cursor.execute("DROP TABLE tags")
+                cursor.execute("ALTER TABLE tags_v24 RENAME TO tags")
+
+            # 4. accounts 表增加 user_id 列
+            cursor.execute("PRAGMA table_info(accounts)")
+            accounts_cols_v24 = [col[1] for col in cursor.fetchall()]
+            if "user_id" not in accounts_cols_v24:
+                cursor.execute("ALTER TABLE accounts ADD COLUMN user_id INTEGER DEFAULT 1")
+                cursor.execute("UPDATE accounts SET user_id = 1 WHERE user_id IS NULL")
+
+        # 确保 admin 用户在全新安装时也能创建（幂等）
+        cursor.execute(
+            "INSERT OR IGNORE INTO users (username, password_hash, role) VALUES ('admin', ?, 'admin')",
+            (hash_password(login_password_default),),
+        )
+
+        # 默认分组（含 user_id=1 即 admin）
         cursor.execute("""
-            INSERT OR IGNORE INTO groups (name, description, color)
-            VALUES ('默认分组', '未分组的邮箱', '#666666')
+            INSERT OR IGNORE INTO groups (name, description, color, user_id)
+            VALUES ('默认分组', '未分组的邮箱', '#666666', 1)
             """)
 
         # 临时邮箱分组（系统分组）
         cursor.execute("""
-            INSERT OR IGNORE INTO groups (name, description, color, is_system)
-            VALUES ('临时邮箱', '自建临时邮箱服务', '#00bcf2', 1)
+            INSERT OR IGNORE INTO groups (name, description, color, is_system, user_id)
+            VALUES ('临时邮箱', '自建临时邮箱服务', '#00bcf2', 1, 1)
             """)
         cursor.execute("""
             UPDATE groups

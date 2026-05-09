@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict
 
-from flask import g, request
+from flask import g, request, session
 
 from outlook_web.errors import build_error_payload, generate_trace_id, resolve_message_en
 
@@ -25,6 +25,15 @@ def ensure_trace_id():
         g.trace_id = incoming[:64]
     else:
         g.trace_id = generate_trace_id()
+
+    # 注入当前登录用户上下文（供 repositories 层读取）
+    try:
+        uid = session.get("user_id")
+        g.current_user_id = int(uid) if uid is not None else None
+        g.current_user_role = session.get("user_role")
+    except Exception:
+        g.current_user_id = None
+        g.current_user_role = None
 
 
 def attach_trace_id_and_normalize_errors(response):

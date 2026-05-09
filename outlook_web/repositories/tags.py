@@ -4,20 +4,32 @@ import sqlite3
 from typing import Dict, List, Optional
 
 from outlook_web.db import get_db
+from outlook_web.security.auth import get_current_user_id
 
 
 def get_tags() -> List[Dict]:
-    """获取所有标签"""
+    """获取当前用户的标签"""
     db = get_db()
-    cursor = db.execute("SELECT * FROM tags ORDER BY created_at DESC")
+    user_id = get_current_user_id()
+    if user_id:
+        cursor = db.execute(
+            "SELECT * FROM tags WHERE user_id = ? ORDER BY created_at DESC",
+            (user_id,),
+        )
+    else:
+        cursor = db.execute("SELECT * FROM tags ORDER BY created_at DESC")
     return [dict(row) for row in cursor.fetchall()]
 
 
 def add_tag(name: str, color: str) -> Optional[int]:
-    """添加标签"""
+    """添加标签（自动关联当前用户）"""
     db = get_db()
+    owner_user_id = get_current_user_id() or 1
     try:
-        cursor = db.execute("INSERT INTO tags (name, color) VALUES (?, ?)", (name, color))
+        cursor = db.execute(
+            "INSERT INTO tags (name, color, user_id) VALUES (?, ?, ?)",
+            (name, color, owner_user_id),
+        )
         db.commit()
         return cursor.lastrowid
     except sqlite3.IntegrityError:
@@ -25,9 +37,13 @@ def add_tag(name: str, color: str) -> Optional[int]:
 
 
 def delete_tag(tag_id: int) -> bool:
-    """删除标签"""
+    """删除标签（含 user_id 验证）"""
     db = get_db()
-    cursor = db.execute("DELETE FROM tags WHERE id = ?", (tag_id,))
+    user_id = get_current_user_id()
+    if user_id:
+        cursor = db.execute("DELETE FROM tags WHERE id = ? AND user_id = ?", (tag_id, user_id))
+    else:
+        cursor = db.execute("DELETE FROM tags WHERE id = ?", (tag_id,))
     db.commit()
     return cursor.rowcount > 0
 

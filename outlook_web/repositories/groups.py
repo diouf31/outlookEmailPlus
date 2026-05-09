@@ -5,6 +5,7 @@ import sqlite3
 from typing import Any, Dict, List, Optional
 
 from outlook_web.db import get_db
+from outlook_web.security.auth import get_current_user_id
 
 
 class GroupPolicyValidationError(ValueError):
@@ -95,22 +96,34 @@ def normalize_group_verification_policy(
 
 
 def load_groups() -> List[Dict]:
-    """加载所有分组（临时邮箱分组排在最前面）"""
+    """加载当前用户的分组（临时邮箱分组排在最前面）"""
     db = get_db()
-    cursor = db.execute("""
-        SELECT * FROM groups
-        ORDER BY
-            CASE WHEN name = '临时邮箱' THEN 0 ELSE 1 END,
-            id
-    """)
+    user_id = get_current_user_id()
+    if user_id:
+        cursor = db.execute(
+            """
+            SELECT * FROM groups
+            WHERE user_id = ?
+            ORDER BY
+                CASE WHEN name = '临时邮箱' THEN 0 ELSE 1 END,
+                id
+            """,
+            (user_id,),
+        )
+    else:
+        cursor = db.execute("""SELECT * FROM groups ORDER BY CASE WHEN name = '临时邮箱' THEN 0 ELSE 1 END, id""")
     rows = cursor.fetchall()
     return [dict(row) for row in rows]
 
 
 def get_group_by_id(group_id: int) -> Optional[Dict]:
-    """根据 ID 获取分组"""
+    """根据 ID 获取分组（包含 user_id 过滤）"""
     db = get_db()
-    cursor = db.execute("SELECT * FROM groups WHERE id = ?", (group_id,))
+    user_id = get_current_user_id()
+    if user_id:
+        cursor = db.execute("SELECT * FROM groups WHERE id = ? AND user_id = ?", (group_id, user_id))
+    else:
+        cursor = db.execute("SELECT * FROM groups WHERE id = ?", (group_id,))
     row = cursor.fetchone()
     return dict(row) if row else None
 
@@ -125,8 +138,9 @@ def add_group(
     verification_ai_enabled: Any = 0,
     verification_ai_model: Any = "",
 ) -> Optional[int]:
-    """添加分组"""
+    """添加分组（自动关联当前用户）"""
     db = get_db()
+    owner_user_id = get_current_user_id() or 1
     policy = normalize_group_verification_policy(
         verification_code_length=verification_code_length,
         verification_code_regex=verification_code_regex,
@@ -144,9 +158,10 @@ def add_group(
                 verification_code_length,
                 verification_code_regex,
                 verification_ai_enabled,
-                verification_ai_model
+                verification_ai_model,
+                user_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
             (
                 name,
@@ -157,6 +172,7 @@ def add_group(
                 policy["verification_code_regex"],
                 policy["verification_ai_enabled"],
                 policy["verification_ai_model"],
+                owner_user_id,
             ),
         )
         db.commit()
@@ -197,7 +213,7 @@ def update_group(
                 verification_code_regex = ?,
                 verification_ai_enabled = ?,
                 verification_ai_model = ?
-            WHERE id = ?
+            WHERE id = ? AND user_id = ?
         """,
             (
                 name,
@@ -209,6 +225,7 @@ def update_group(
                 policy["verification_ai_enabled"],
                 policy["verification_ai_model"],
                 group_id,
+                get_current_user_id(),
             ),
         )
         db.commit()
@@ -218,10 +235,17 @@ def update_group(
 
 
 def get_default_group_id() -> int:
-    """获取默认分组 ID（不依赖固定 id=1，增强兼容性）"""
+    """获取当前用户的默认分组 ID"""
     db = get_db()
     try:
-        row = db.execute("SELECT id FROM groups WHERE name = '默认分组' LIMIT 1").fetchone()
+        user_id = get_current_user_id()
+        if user_id:
+            row = db.execute(
+                "SELECT id FROM groups WHERE name = '默认分组' AND user_id = ? LIMIT 1",
+                (user_id,),
+            ).fetchone()
+        else:
+            row = db.execute("SELECT id FROM groups WHERE name = '默认分组' LIMIT 1").fetchone()
         return row["id"] if row else 1
     except Exception:
         return 1
@@ -231,7 +255,7 @@ def delete_group(group_id: int) -> bool:
     """删除分组（将该分组下的邮箱移到默认分组）"""
     db = get_db()
     try:
-        row = db.execute("SELECT id, name, is_system FROM groups WHERE id = ?", (group_id,)).fetchone()
+        row = db.execute("SELECT id, name, is_system FROM groups WHERE id = ? AND user_id = ?", (group_id, get_current_user_id())).fetchone()
         if not row:
             return False
         if row["is_system"]:
@@ -242,10 +266,10 @@ def delete_group(group_id: int) -> bool:
             return False
 
         db.execute(
-            "UPDATE accounts SET group_id = ?, updated_at = CURRENT_TIMESTAMP WHERE group_id = ?",
-            (default_group_id, group_id),
+            "UPDATE accounts SET group_id = ?, updated_at = CURRENT_TIMESTAMP WHERE group_id = ? AND user_id = ?",
+            (default_group_id, group_id, get_current_user_id()),
         )
-        db.execute("DELETE FROM groups WHERE id = ?", (group_id,))
+        db.execute("DELETE FROM groups WHERE id = ? AND user_id = ?", (group_id, get_current_user_id()))
         db.commit()
         return True
     except Exception:
@@ -255,15 +279,19 @@ def delete_group(group_id: int) -> bool:
 def get_group_account_count(group_id: int) -> int:
     """获取分组下的邮箱数量"""
     db = get_db()
-    cursor = db.execute("SELECT COUNT(*) as count FROM accounts WHERE group_id = ?", (group_id,))
+    cursor = db.execute("SELECT COUNT(*) as count FROM accounts WHERE group_id = ? AND user_id = ?", (group_id, get_current_user_id()))
     row = cursor.fetchone()
     return row["count"] if row else 0
 
 
 def get_group_by_name(name: str) -> Optional[Dict]:
-    """按名称查找分组（精确匹配，不区分大小写）"""
+    """按名称查找分组（精确匹配，不区分大小写，包含 user_id 过滤）"""
     db = get_db()
-    cursor = db.execute("SELECT * FROM groups WHERE LOWER(name) = LOWER(?)", (name,))
+    user_id = get_current_user_id()
+    if user_id:
+        cursor = db.execute("SELECT * FROM groups WHERE LOWER(name) = LOWER(?) AND user_id = ?", (name, user_id))
+    else:
+        cursor = db.execute("SELECT * FROM groups WHERE LOWER(name) = LOWER(?)", (name,))
     row = cursor.fetchone()
     return dict(row) if row else None
 
