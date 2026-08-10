@@ -151,6 +151,23 @@ def get_current_user_id() -> Optional[int]:
         return None
 
 
+def get_current_username() -> Optional[str]:
+    """获取当前登录用户名。在非请求上下文中返回 None。"""
+    try:
+        name = getattr(g, "current_username", None)
+        if name:
+            return str(name)
+    except RuntimeError:
+        pass
+    try:
+        from flask import session
+
+        name = session.get("username")
+        return str(name) if name else None
+    except Exception:
+        return None
+
+
 def get_current_user_role() -> Optional[str]:
     """获取当前登录用户角色（admin/user），未登录返回 None。"""
     try:

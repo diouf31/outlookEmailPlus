@@ -31,9 +31,11 @@ def ensure_trace_id():
         uid = session.get("user_id")
         g.current_user_id = int(uid) if uid is not None else None
         g.current_user_role = session.get("user_role")
+        g.current_username = session.get("username")
     except Exception:
         g.current_user_id = None
         g.current_user_role = None
+        g.current_username = None
 
 
 def attach_trace_id_and_normalize_errors(response):

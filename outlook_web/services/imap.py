@@ -672,6 +672,94 @@ def get_email_detail_imap_with_server(
                 pass
 
 
+def _internet_message_id_candidates(internet_message_id: str) -> List[str]:
+    raw = (internet_message_id or "").strip()
+    if not raw:
+        return []
+    candidates = [raw]
+    if raw.startswith("<") and raw.endswith(">"):
+        candidates.append(raw[1:-1])
+    else:
+        candidates.append(f"<{raw}>")
+    # 去重且保持顺序
+    seen = set()
+    ordered: List[str] = []
+    for item in candidates:
+        if item and item not in seen:
+            seen.add(item)
+            ordered.append(item)
+    return ordered
+
+
+def _resolve_internet_message_ids(
+    *,
+    graph_access_token: str,
+    message_ids: List[str],
+) -> tuple[List[str], List[str], List[str]]:
+    """
+    将 Graph message id 解析为 RFC Message-ID。
+    返回: (internet_message_ids, already_gone_ids, resolve_errors)
+    """
+    from urllib.parse import quote
+
+    headers = {"Authorization": f"Bearer {graph_access_token}"}
+    resolved: List[str] = []
+    already_gone: List[str] = []
+    errors: List[str] = []
+
+    for msg_id in message_ids:
+        mid = (msg_id or "").strip()
+        if not mid:
+            continue
+        # 兼容：调用方若直接传入 Message-ID / <Message-ID>
+        if "@" in mid and " " not in mid and len(mid) < 300:
+            resolved.extend(_internet_message_id_candidates(mid)[:1])
+            continue
+        try:
+            url = f"https://graph.microsoft.com/v1.0/me/messages/{quote(mid, safe='')}"
+            resp = requests.get(
+                url,
+                headers=headers,
+                params={"$select": "id,internetMessageId"},
+                timeout=30,
+            )
+            if resp.status_code == 404:
+                already_gone.append(mid)
+                continue
+            if resp.status_code != 200:
+                errors.append(f"Msg ID: {mid}, resolve_status={resp.status_code}")
+                continue
+            internet_id = str((resp.json() or {}).get("internetMessageId") or "").strip()
+            if not internet_id:
+                errors.append(f"Msg ID: {mid}, missing internetMessageId")
+                continue
+            resolved.append(internet_id)
+        except Exception as exc:
+            errors.append(f"Msg ID: {mid}, resolve_error={exc}")
+
+    return resolved, already_gone, errors
+
+
+def _imap_select_writable(connection: imaplib.IMAP4, folder: str) -> Optional[str]:
+    folder_map = {
+        "inbox": ["INBOX"],
+        "junk": ["Junk", "Junk Email", "Spam", "垃圾邮件"],
+        "junkemail": ["Junk", "Junk Email", "Spam", "垃圾邮件"],
+        "deleteditems": ["Deleted", "Deleted Items", "Trash", "已删除邮件"],
+        "trash": ["Deleted", "Deleted Items", "Trash", "已删除邮件"],
+    }
+    candidates = folder_map.get((folder or "").lower(), [folder or "INBOX"])
+    for candidate in candidates:
+        for select_target in (f'"{candidate}"', candidate):
+            try:
+                status, _ = connection.select(select_target, readonly=False)
+                if status == "OK":
+                    return candidate
+            except Exception:
+                continue
+    return None
+
+
 def delete_emails_imap(
     email_addr: str,
     client_id: str,
@@ -679,20 +767,137 @@ def delete_emails_imap(
     message_ids: List[str],
     server: str,
 ) -> Dict[str, Any]:
-    """通过 IMAP 删除邮件（永久删除）"""
-    access_token = get_access_token_graph(client_id, refresh_token)
-    if not access_token:
-        return {"success": False, "error": "获取 Access Token 失败"}
+    """
+    通过 IMAP 删除邮件（永久删除）。
+
+    Graph message id 与 IMAP UID 不兼容：先用 Graph(Mail.Read) 解析 internetMessageId，
+    再在 IMAP 中按 Message-ID 定位并 STORE \\Deleted + EXPUNGE。
+    适用于 token 仅有 Mail.Read、没有 Mail.ReadWrite 导致 Graph DELETE 403 的场景。
+    """
+    if not message_ids:
+        return {"success": True, "success_count": 0, "failed_count": 0, "errors": []}
+
+    graph_token = get_access_token_graph(client_id, refresh_token)
+    if not graph_token:
+        return {
+            "success": False,
+            "error": build_error_payload(
+                "GRAPH_TOKEN_FAILED",
+                "获取 Graph 访问令牌失败，无法解析邮件 ID",
+                "IMAPError",
+                500,
+                "empty_graph_token",
+            ),
+        }
+
+    internet_ids, already_gone, resolve_errors = _resolve_internet_message_ids(
+        graph_access_token=graph_token,
+        message_ids=message_ids,
+    )
+
+    token_result = get_access_token_imap_result(client_id, refresh_token)
+    if not token_result.get("success"):
+        return {
+            "success": False,
+            "error": token_result.get("error")
+            or build_error_payload("IMAP_TOKEN_FAILED", "获取 IMAP 访问令牌失败", "IMAPError", 500, ""),
+            "success_count": len(already_gone),
+            "failed_count": max(0, len(message_ids) - len(already_gone)),
+            "errors": resolve_errors,
+        }
+
+    access_token = token_result.get("access_token")
+    success_count = len(already_gone)
+    failed_count = 0
+    errors: List[str] = list(resolve_errors)
+    imap = None
 
     try:
         auth_string = "user=%s\x01auth=Bearer %s\x01\x01" % (email_addr, access_token)
-
         imap = imaplib.IMAP4_SSL(server, IMAP_PORT)
         imap.authenticate("XOAUTH2", lambda x: auth_string.encode("utf-8"))
 
-        imap.select("INBOX")
+        search_folders = ("inbox", "junk", "deleteditems")
+        for internet_id in internet_ids:
+            deleted = False
+            last_err = ""
+            for folder_key in search_folders:
+                selected = _imap_select_writable(imap, folder_key)
+                if not selected:
+                    continue
+                for candidate in _internet_message_id_candidates(internet_id):
+                    try:
+                        typ, data = imap.uid("SEARCH", None, "HEADER", "Message-ID", candidate)
+                    except Exception as exc:
+                        last_err = str(exc)
+                        continue
+                    if typ != "OK" or not data or not data[0]:
+                        continue
+                    uids = data[0].split()
+                    if not uids:
+                        continue
+                    for uid in uids:
+                        try:
+                            store_typ, _ = imap.uid("STORE", uid, "+FLAGS", r"(\Deleted)")
+                            if store_typ != "OK":
+                                last_err = f"STORE failed for uid={uid}"
+                                continue
+                            deleted = True
+                        except Exception as exc:
+                            last_err = str(exc)
+                    if deleted:
+                        try:
+                            imap.expunge()
+                        except Exception:
+                            pass
+                        break
+                if deleted:
+                    break
+            if deleted:
+                success_count += 1
+            else:
+                failed_count += 1
+                errors.append(
+                    f"Message-ID: {internet_id}, IMAP 未找到或删除失败"
+                    + (f" ({last_err})" if last_err else "")
+                )
 
-        # Graph message id 与 IMAP UID 不兼容：保留原行为（暂不支持）
-        return {"success": False, "error": "IMAP 删除暂不支持 (ID 格式不兼容)"}
+        # 解析失败的也计入失败
+        failed_count += len(resolve_errors)
+
+        result: Dict[str, Any] = {
+            "success": success_count > 0,
+            "partial_success": success_count > 0 and failed_count > 0,
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "errors": errors,
+        }
+        if not result["success"]:
+            result["error"] = build_error_payload(
+                "EMAIL_DELETE_FAILED",
+                "IMAP 删除邮件失败",
+                "IMAPError",
+                502,
+                {"failed_count": failed_count, "errors": errors[:10]},
+            )
+        return result
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return {
+            "success": False,
+            "error": build_error_payload(
+                "EMAIL_DELETE_FAILED",
+                "IMAP 删除邮件失败",
+                type(e).__name__,
+                500,
+                str(e),
+            ),
+            "success_count": success_count,
+            "failed_count": max(failed_count, len(message_ids) - success_count),
+            "errors": errors + [str(e)],
+        }
+    finally:
+        if imap is not None:
+            try:
+                imap.logout()
+            except Exception:
+                pass

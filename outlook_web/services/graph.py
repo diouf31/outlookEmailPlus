@@ -391,10 +391,22 @@ def delete_emails_graph(
                         success_count += 1
                     else:
                         failed_count += 1
+                        status_code = res.get("status")
+                        body = res.get("body") or {}
+                        err_code = ""
+                        err_msg = ""
+                        if isinstance(body, dict):
+                            err = body.get("error") or {}
+                            if isinstance(err, dict):
+                                err_code = str(err.get("code") or "")
+                                err_msg = str(err.get("message") or "")
                         try:
-                            errors.append(f"Msg ID: {batch[int(res['id'])]}, Status: {res.get('status')}")
+                            detail = f"Msg ID: {batch[int(res['id'])]}, Status: {status_code}"
                         except Exception:
-                            errors.append(f"Status: {res.get('status')}")
+                            detail = f"Status: {status_code}"
+                        if err_code or err_msg:
+                            detail = f"{detail}, {err_code} {err_msg}".strip()
+                        errors.append(detail)
             else:
                 failed_count += len(batch)
                 errors.append(f"Batch request failed: {response.text}")
@@ -411,12 +423,25 @@ def delete_emails_graph(
     }
 
     if not result["success"]:
-        result["error"] = build_error_payload(
-            "EMAIL_DELETE_FAILED",
-            "删除邮件失败",
-            "GraphAPIError",
-            502,
-            {"failed_count": failed_count, "errors": errors[:10]},
+        access_denied = any(
+            ("403" in str(err)) or ("ErrorAccessDenied" in str(err)) or ("Access is denied" in str(err))
+            for err in errors
         )
+        if access_denied:
+            result["error"] = build_error_payload(
+                "EMAIL_DELETE_FORBIDDEN",
+                "Graph 删除被拒绝：当前授权缺少 Mail.ReadWrite，将尝试 IMAP 回退删除",
+                "GraphAPIError",
+                403,
+                {"failed_count": failed_count, "errors": errors[:10]},
+            )
+        else:
+            result["error"] = build_error_payload(
+                "EMAIL_DELETE_FAILED",
+                "删除邮件失败",
+                "GraphAPIError",
+                502,
+                {"failed_count": failed_count, "errors": errors[:10]},
+            )
 
     return result

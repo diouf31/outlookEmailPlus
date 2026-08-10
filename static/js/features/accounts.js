@@ -379,7 +379,14 @@
                     handleApiError(data, '导入邮箱失败');
                 }
             } catch (error) {
-                showToast(translateAppTextLocal('添加失败'), 'error');
+                console.error('addAccount failed:', error);
+                const detail = (error && error.message) ? String(error.message) : String(error || '');
+                showToast(
+                    detail
+                        ? `${translateAppTextLocal('添加失败')}: ${detail}`
+                        : translateAppTextLocal('添加失败'),
+                    'error'
+                );
             }
         }
 

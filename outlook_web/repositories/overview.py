@@ -7,10 +7,36 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List
 
 from outlook_web.db import get_db
+from outlook_web.security.auth import get_current_user_id, get_current_user_role, get_current_username
 
 
 def _db(conn: sqlite3.Connection | None = None) -> sqlite3.Connection:
     return conn or get_db()
+
+
+def _account_user_filter_sql(alias: str = "") -> tuple[str, list[Any]]:
+    """与账号管理一致：有登录用户时只统计该用户的账号。"""
+    user_id = get_current_user_id()
+    prefix = f"{alias}." if alias else ""
+    if user_id:
+        return f" AND {prefix}user_id = ? ", [user_id]
+    return "", []
+
+
+def _verification_user_join_sql() -> tuple[str, str, list[Any]]:
+    """
+    验证码日志按账号归属过滤。
+    返回 (join_sql, where_sql, params)。无登录用户时不限制（兼容后台/测试）。
+    有用户时仅统计其 accounts 上的日志，排除共享临时邮箱日志。
+    """
+    user_id = get_current_user_id()
+    if not user_id:
+        return "", "", []
+    return (
+        " INNER JOIN accounts AS _ua ON vel.account_id > 0 AND _ua.id = vel.account_id ",
+        " AND _ua.user_id = ? ",
+        [user_id],
+    )
 
 
 def _safe_div(numerator: int | float, denominator: int | float) -> float:
@@ -56,12 +82,17 @@ def _action_group(action: str) -> str:
 def get_overview_summary(conn: sqlite3.Connection | None = None) -> Dict[str, Any]:
     # 概览大盘入口：聚合账号状态、邮箱池快照、刷新健康度、今日 KPI，供前端 dashboard 一次性加载
     db = _db(conn)
+    user_sql, user_params = _account_user_filter_sql()
 
-    account_rows = db.execute("""
+    account_rows = db.execute(
+        f"""
         SELECT COALESCE(status, '') AS status, COUNT(*) AS cnt
         FROM accounts
+        WHERE 1=1{user_sql}
         GROUP BY COALESCE(status, '')
-        """).fetchall()
+        """,
+        tuple(user_params),
+    ).fetchall()
     account_status = {
         "total": 0,
         "active": 0,
@@ -82,12 +113,15 @@ def get_overview_summary(conn: sqlite3.Connection | None = None) -> Dict[str, An
         elif status in {"error", "failed"}:
             account_status["error"] += count
 
-    pool_rows = db.execute("""
+    pool_rows = db.execute(
+        f"""
         SELECT COALESCE(pool_status, '') AS pool_status, COUNT(*) AS cnt
         FROM accounts
-        WHERE pool_status IS NOT NULL
+        WHERE pool_status IS NOT NULL{user_sql}
         GROUP BY COALESCE(pool_status, '')
-        """).fetchall()
+        """,
+        tuple(user_params),
+    ).fetchall()
     pool_snapshot = {
         "available": 0,
         "in_use": 0,
@@ -113,48 +147,83 @@ def get_overview_summary(conn: sqlite3.Connection | None = None) -> Dict[str, An
             pool_snapshot["disabled"] += count
     pool_snapshot["usage_rate"] = _safe_div(pool_snapshot["in_use"], pool_snapshot["total"])
 
-    refresh_last = db.execute("""
-        SELECT started_at, finished_at, total, success_count, failed_count
-        FROM refresh_runs
-        ORDER BY started_at DESC, id DESC
-        LIMIT 1
-        """).fetchone()
-    refresh_7d = db.execute("""
-        SELECT COALESCE(SUM(success_count), 0) AS success_sum,
-               COALESCE(SUM(total), 0) AS total_sum
-        FROM refresh_runs
-        WHERE datetime(started_at) >= datetime('now', '-7 day')
-        """).fetchone()
-
+    # 刷新健康度：有用户时按该用户账号的 refresh logs 统计；否则沿用全局 refresh_runs
     duration_seconds = 0
-    if refresh_last and refresh_last["started_at"] and refresh_last["finished_at"]:
-        duration_row = db.execute(
+    if user_params:
+        refresh_last = db.execute(
             """
-            SELECT CAST((julianday(?) - julianday(?)) * 86400 AS INTEGER) AS duration_s
+            SELECT MAX(arl.created_at) AS started_at,
+                   SUM(CASE WHEN lower(COALESCE(arl.status,'')) IN ('success','ok') THEN 1 ELSE 0 END) AS success_count,
+                   SUM(CASE WHEN lower(COALESCE(arl.status,'')) NOT IN ('success','ok') THEN 1 ELSE 0 END) AS failed_count
+            FROM account_refresh_logs AS arl
+            INNER JOIN accounts AS a ON a.id = arl.account_id
+            WHERE a.user_id = ?
+              AND datetime(arl.created_at) >= datetime('now', '-1 day')
             """,
-            (refresh_last["finished_at"], refresh_last["started_at"]),
+            tuple(user_params),
         ).fetchone()
-        duration_seconds = int(duration_row["duration_s"] or 0) if duration_row else 0
+        refresh_7d = db.execute(
+            """
+            SELECT COALESCE(SUM(CASE WHEN lower(COALESCE(arl.status,'')) IN ('success','ok') THEN 1 ELSE 0 END), 0) AS success_sum,
+                   COALESCE(COUNT(*), 0) AS total_sum
+            FROM account_refresh_logs AS arl
+            INNER JOIN accounts AS a ON a.id = arl.account_id
+            WHERE a.user_id = ?
+              AND datetime(arl.created_at) >= datetime('now', '-7 day')
+            """,
+            tuple(user_params),
+        ).fetchone()
+    else:
+        refresh_last = db.execute("""
+            SELECT started_at, finished_at, total, success_count, failed_count
+            FROM refresh_runs
+            ORDER BY started_at DESC, id DESC
+            LIMIT 1
+            """).fetchone()
+        refresh_7d = db.execute("""
+            SELECT COALESCE(SUM(success_count), 0) AS success_sum,
+                   COALESCE(SUM(total), 0) AS total_sum
+            FROM refresh_runs
+            WHERE datetime(started_at) >= datetime('now', '-7 day')
+            """).fetchone()
+        if refresh_last and refresh_last["started_at"] and refresh_last["finished_at"]:
+            duration_row = db.execute(
+                """
+                SELECT CAST((julianday(?) - julianday(?)) * 86400 AS INTEGER) AS duration_s
+                """,
+                (refresh_last["finished_at"], refresh_last["started_at"]),
+            ).fetchone()
+            duration_seconds = int(duration_row["duration_s"] or 0) if duration_row else 0
 
     today_start = int(datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+    v_join, v_where, v_params = _verification_user_join_sql()
     today_logs = db.execute(
-        """
+        f"""
         SELECT COUNT(*) AS verification_count
-        FROM verification_extract_logs
-        WHERE started_at >= ?
+        FROM verification_extract_logs AS vel
+        {v_join}
+        WHERE vel.started_at >= ?{v_where}
         """,
-        (today_start,),
+        tuple([today_start] + v_params),
     ).fetchone()
-    today_messages = db.execute("""
-        SELECT COUNT(*) AS message_count
-        FROM temp_email_messages
-        WHERE datetime(created_at) >= datetime('now', 'start of day')
-        """).fetchone()
-    temp_mail_active = db.execute("""
-        SELECT COUNT(*) AS active_count
-        FROM temp_emails
-        WHERE COALESCE(status, 'active') = 'active'
-        """).fetchone()
+
+    # 临时邮箱表无 user_id：多用户隔离下不展示共享池数据，避免串号
+    if user_params:
+        emails_received = 0
+        temp_emails_active = 0
+    else:
+        today_messages = db.execute("""
+            SELECT COUNT(*) AS message_count
+            FROM temp_email_messages
+            WHERE datetime(created_at) >= datetime('now', 'start of day')
+            """).fetchone()
+        temp_mail_active = db.execute("""
+            SELECT COUNT(*) AS active_count
+            FROM temp_emails
+            WHERE COALESCE(status, 'active') = 'active'
+            """).fetchone()
+        emails_received = int(today_messages["message_count"] or 0) if today_messages else 0
+        temp_emails_active = int(temp_mail_active["active_count"] or 0) if temp_mail_active else 0
 
     return {
         "account_status": account_status,
@@ -170,9 +239,9 @@ def get_overview_summary(conn: sqlite3.Connection | None = None) -> Dict[str, An
             ),
         },
         "kpi": {
-            "emails_received": int(today_messages["message_count"] or 0) if today_messages else 0,
+            "emails_received": emails_received,
             "verification_extracted": int(today_logs["verification_count"] or 0) if today_logs else 0,
-            "temp_emails_active": int(temp_mail_active["active_count"] or 0) if temp_mail_active else 0,
+            "temp_emails_active": temp_emails_active,
         },
     }
 
@@ -186,16 +255,18 @@ def get_verification_stats(
     # 验证码提取统计：汇总成功率、渠道分布、AI 增强效果、P95 延迟，支持运营洞察
     db = _db(conn)
     cutoff = time.time() - max(int(days), 1) * 86400
+    v_join, v_where, v_params = _verification_user_join_sql()
 
     rows = db.execute(
-        """
-        SELECT id, account_id, channel, started_at, finished_at, duration_ms, result_type,
-               code_found, used_ai, error_code, trace_id
-        FROM verification_extract_logs
-        WHERE started_at >= ?
-        ORDER BY started_at DESC, id DESC
+        f"""
+        SELECT vel.id, vel.account_id, vel.channel, vel.started_at, vel.finished_at, vel.duration_ms,
+               vel.result_type, vel.code_found, vel.used_ai, vel.error_code, vel.trace_id
+        FROM verification_extract_logs AS vel
+        {v_join}
+        WHERE vel.started_at >= ?{v_where}
+        ORDER BY vel.started_at DESC, vel.id DESC
         """,
-        (cutoff,),
+        tuple([cutoff] + v_params),
     ).fetchall()
 
     total_count = len(rows)
@@ -241,19 +312,35 @@ def get_verification_stats(
     channel_stats.sort(key=lambda item: (-int(item["count"]), item["channel"]))
 
     # account_id > 0 对应 accounts 表，< 0 对应 temp_emails 表（取反编码，见 encode_temp_mail_log_account_id）
-    recent_rows = db.execute(
-        """
-        SELECT vel.id, vel.started_at, vel.channel, vel.code_found, vel.duration_ms,
-               vel.result_type, vel.used_ai, vel.error_code,
-               COALESCE(a.email, tm.email, '') AS account_email
-        FROM verification_extract_logs AS vel
-        LEFT JOIN accounts AS a ON vel.account_id > 0 AND a.id = vel.account_id
-        LEFT JOIN temp_emails AS tm ON vel.account_id < 0 AND tm.id = -vel.account_id
-        ORDER BY vel.started_at DESC, vel.id DESC
-        LIMIT ?
-        """,
-        (max(int(recent_limit), 1),),
-    ).fetchall()
+    # 多用户隔离时只展示当前用户账号相关记录（不含共享临时邮箱）
+    if v_params:
+        recent_rows = db.execute(
+            f"""
+            SELECT vel.id, vel.started_at, vel.channel, vel.code_found, vel.duration_ms,
+                   vel.result_type, vel.used_ai, vel.error_code,
+                   COALESCE(a.email, '') AS account_email
+            FROM verification_extract_logs AS vel
+            INNER JOIN accounts AS a ON vel.account_id > 0 AND a.id = vel.account_id
+            WHERE a.user_id = ?
+            ORDER BY vel.started_at DESC, vel.id DESC
+            LIMIT ?
+            """,
+            (v_params[0], max(int(recent_limit), 1)),
+        ).fetchall()
+    else:
+        recent_rows = db.execute(
+            """
+            SELECT vel.id, vel.started_at, vel.channel, vel.code_found, vel.duration_ms,
+                   vel.result_type, vel.used_ai, vel.error_code,
+                   COALESCE(a.email, tm.email, '') AS account_email
+            FROM verification_extract_logs AS vel
+            LEFT JOIN accounts AS a ON vel.account_id > 0 AND a.id = vel.account_id
+            LEFT JOIN temp_emails AS tm ON vel.account_id < 0 AND tm.id = -vel.account_id
+            ORDER BY vel.started_at DESC, vel.id DESC
+            LIMIT ?
+            """,
+            (max(int(recent_limit), 1),),
+        ).fetchall()
     recent = [
         {
             "id": int(row["id"]),
@@ -289,6 +376,29 @@ def get_verification_stats(
 
 def get_external_api_stats(conn: sqlite3.Connection | None = None, *, days: int = 7) -> Dict[str, Any]:
     # 外部 API 消费者统计：按调用方维度聚合调用量、成功率、端点分布，用于 API 用量监控
+    # 表无 user_id：普通 user 角色不展示系统级 API 用量；admin 可见（实例级共享配置）
+    empty = {
+        "kpi": {
+            "today_calls": 0,
+            "week_calls": 0,
+            "today_vs_yesterday_rate": 0.0,
+            "success_rate": 0.0,
+            "error_count": 0,
+            "active_callers": 0,
+        },
+        "daily_series": [],
+        "by_endpoint": [],
+        "caller_rank": [],
+    }
+    if get_current_user_id() and get_current_user_role() != "admin":
+        days = max(int(days), 1)
+        today = date.today()
+        empty["daily_series"] = [
+            {"date": (today - timedelta(days=offset)).isoformat(), "count": 0}
+            for offset in range(days - 1, -1, -1)
+        ]
+        return empty
+
     db = _db(conn)
     days = max(int(days), 1)
     today = date.today()
@@ -416,6 +526,8 @@ def get_pool_stats(conn: sqlite3.Connection | None = None, *, days: int = 7) -> 
     # 邮箱池统计：汇总可用/占用/冷却分布、操作统计、项目 Top5 使用率，帮助运营判断资源充足度
     db = _db(conn)
     cutoff_dt = (datetime.now(timezone.utc) - timedelta(days=max(int(days), 1))).strftime("%Y-%m-%dT%H:%M:%SZ")
+    user_sql, user_params = _account_user_filter_sql()
+    user_sql_a, _ = _account_user_filter_sql("a")
 
     pool_counts = {
         "available": 0,
@@ -423,12 +535,15 @@ def get_pool_stats(conn: sqlite3.Connection | None = None, *, days: int = 7) -> 
         "cooldown": 0,
         "used": 0,
     }
-    rows = db.execute("""
+    rows = db.execute(
+        f"""
         SELECT COALESCE(pool_status, '') AS pool_status, COUNT(*) AS cnt
         FROM accounts
-        WHERE pool_status IS NOT NULL
+        WHERE pool_status IS NOT NULL{user_sql}
         GROUP BY COALESCE(pool_status, '')
-        """).fetchall()
+        """,
+        tuple(user_params),
+    ).fetchall()
     for row in rows:
         status = str(row["pool_status"] or "").strip().lower()
         count = int(row["cnt"] or 0)
@@ -442,13 +557,14 @@ def get_pool_stats(conn: sqlite3.Connection | None = None, *, days: int = 7) -> 
             pool_counts["used"] += count
 
     dist_rows = db.execute(
-        """
-        SELECT action, result, COUNT(*) AS cnt
-        FROM account_claim_logs
-        WHERE COALESCE(claimed_at, created_at, '') >= ?
-        GROUP BY action, result
+        f"""
+        SELECT l.action, l.result, COUNT(*) AS cnt
+        FROM account_claim_logs AS l
+        INNER JOIN accounts AS a ON a.id = l.account_id
+        WHERE COALESCE(l.claimed_at, l.created_at, '') >= ?{user_sql_a}
+        GROUP BY l.action, l.result
         """,
-        (cutoff_dt,),
+        tuple([cutoff_dt] + user_params),
     ).fetchall()
     operation_distribution = {
         "claim": 0,
@@ -475,26 +591,33 @@ def get_pool_stats(conn: sqlite3.Connection | None = None, *, days: int = 7) -> 
         elif action == "expire":
             operation_distribution["expire"] += count
 
-    max_claimed = db.execute("""
+    max_claimed = db.execute(
+        f"""
         SELECT MAX(CAST((julianday('now') - julianday(claimed_at)) * 86400 AS INTEGER)) AS max_claim_s
         FROM accounts
-        WHERE pool_status = 'claimed' AND claimed_at IS NOT NULL
-        """).fetchone()
+        WHERE pool_status = 'claimed' AND claimed_at IS NOT NULL{user_sql}
+        """,
+        tuple(user_params),
+    ).fetchone()
     claim_count = operation_distribution["claim"]
     complete_count = operation_distribution["complete"]
     complete_success = operation_distribution["complete_success"]
 
-    top_project_rows = db.execute("""
-        SELECT project_key,
-               COUNT(DISTINCT account_id) AS account_count,
-               COALESCE(SUM(success_count), 0) AS success_count,
+    top_project_rows = db.execute(
+        f"""
+        SELECT u.project_key,
+               COUNT(DISTINCT u.account_id) AS account_count,
+               COALESCE(SUM(u.success_count), 0) AS success_count,
                COUNT(*) AS row_count
-        FROM account_project_usage
-        WHERE COALESCE(project_key, '') != ''
-        GROUP BY project_key
-        ORDER BY success_count DESC, account_count DESC, project_key ASC
+        FROM account_project_usage AS u
+        INNER JOIN accounts AS a ON a.id = u.account_id
+        WHERE COALESCE(u.project_key, '') != ''{user_sql_a}
+        GROUP BY u.project_key
+        ORDER BY success_count DESC, account_count DESC, u.project_key ASC
         LIMIT 5
-        """).fetchall()
+        """,
+        tuple(user_params),
+    ).fetchall()
     project_top5 = [
         {
             "project_key": row["project_key"] or "",
@@ -505,7 +628,8 @@ def get_pool_stats(conn: sqlite3.Connection | None = None, *, days: int = 7) -> 
         for row in top_project_rows
     ]
 
-    recent_rows = db.execute("""
+    recent_rows = db.execute(
+        f"""
         SELECT COALESCE(l.claimed_at, l.created_at) AS action_time,
                a.email AS account_email,
                l.action,
@@ -513,10 +637,13 @@ def get_pool_stats(conn: sqlite3.Connection | None = None, *, days: int = 7) -> 
                a.claimed_project_key AS project_key,
                l.result
         FROM account_claim_logs AS l
-        LEFT JOIN accounts AS a ON a.id = l.account_id
+        INNER JOIN accounts AS a ON a.id = l.account_id
+        WHERE 1=1{user_sql_a}
         ORDER BY action_time DESC, l.id DESC
         LIMIT 10
-        """).fetchall()
+        """,
+        tuple(user_params),
+    ).fetchall()
     recent_operations = [
         {
             "time": row["action_time"] or "",
@@ -554,33 +681,69 @@ def get_activity_stats(
     # 活动时间线：合并审计日志 + 通知推送 + 验证码提取三种事件源，按时间倒序统一展示
     db = _db(conn)
     hours = max(int(hours), 1)
-    audit_rows = db.execute(
-        """
-        SELECT action, resource_type, operator, status, created_at
-        FROM audit_logs
-        WHERE datetime(created_at) >= datetime('now', ?)
-        ORDER BY created_at DESC, id DESC
-        """,
-        (f"-{hours} hour",),
-    ).fetchall()
-    notification_rows = db.execute(
-        """
-        SELECT channel, status, created_at, delivered_at
-        FROM notification_delivery_logs
-        WHERE datetime(created_at) >= datetime('now', ?)
-        ORDER BY created_at DESC, id DESC
-        """,
-        (f"-{hours} hour",),
-    ).fetchall()
+    username = get_current_username()
+    user_id = get_current_user_id()
+
+    if username:
+        audit_rows = db.execute(
+            """
+            SELECT action, resource_type, operator, status, created_at
+            FROM audit_logs
+            WHERE datetime(created_at) >= datetime('now', ?)
+              AND operator = ?
+            ORDER BY created_at DESC, id DESC
+            """,
+            (f"-{hours} hour", username),
+        ).fetchall()
+    else:
+        audit_rows = db.execute(
+            """
+            SELECT action, resource_type, operator, status, created_at
+            FROM audit_logs
+            WHERE datetime(created_at) >= datetime('now', ?)
+            ORDER BY created_at DESC, id DESC
+            """,
+            (f"-{hours} hour",),
+        ).fetchall()
+
+    if user_id:
+        notification_rows = db.execute(
+            """
+            SELECT n.channel, n.status, n.created_at, n.delivered_at
+            FROM notification_delivery_logs AS n
+            WHERE datetime(n.created_at) >= datetime('now', ?)
+              AND (
+                    n.source_key IN (SELECT email FROM accounts WHERE user_id = ?)
+                    OR n.source_key IN (
+                        SELECT CAST(id AS TEXT) FROM accounts WHERE user_id = ?
+                    )
+                  )
+            ORDER BY n.created_at DESC, n.id DESC
+            """,
+            (f"-{hours} hour", user_id, user_id),
+        ).fetchall()
+    else:
+        notification_rows = db.execute(
+            """
+            SELECT channel, status, created_at, delivered_at
+            FROM notification_delivery_logs
+            WHERE datetime(created_at) >= datetime('now', ?)
+            ORDER BY created_at DESC, id DESC
+            """,
+            (f"-{hours} hour",),
+        ).fetchall()
+
     verification_cutoff = time.time() - hours * 3600
+    v_join, v_where, v_params = _verification_user_join_sql()
     verification_rows = db.execute(
-        """
-        SELECT started_at, channel, result_type, code_found, duration_ms
-        FROM verification_extract_logs
-        WHERE started_at >= ?
-        ORDER BY started_at DESC, id DESC
+        f"""
+        SELECT vel.started_at, vel.channel, vel.result_type, vel.code_found, vel.duration_ms
+        FROM verification_extract_logs AS vel
+        {v_join}
+        WHERE vel.started_at >= ?{v_where}
+        ORDER BY vel.started_at DESC, vel.id DESC
         """,
-        (verification_cutoff,),
+        tuple([verification_cutoff] + v_params),
     ).fetchall()
 
     op_type_map: Dict[str, int] = {}

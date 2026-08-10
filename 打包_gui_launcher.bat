@@ -13,50 +13,70 @@ set "PY_FILE=gui_launcher.py"
 set "NAME=gui_launcher"
 
 REM 1) 清理旧产物
-echo [1/5] 清理旧产物...
+echo [1/5] Cleaning old build artifacts...
 if exist "build" rmdir /s /q "build"
 if exist "dist" rmdir /s /q "dist"
 if exist "%NAME%.spec" del /f /q "%NAME%.spec"
-echo 清理完成
+echo Clean done.
 
-REM 2) 检查 venv
+REM 2) 检查 / 创建 venv
 echo.
-echo [2/5] 检查虚拟环境...
+echo [2/5] Checking venv...
 if not exist "venv\Scripts\python.exe" (
-    echo 未找到 venv\Scripts\python.exe，请先运行:
-    echo   python -m venv venv
-    echo   venv\Scripts\pip install -r requirements.txt
-    pause
-    popd
-    exit /b 1
+    echo venv not found, creating...
+    where python >nul 2>nul
+    if errorlevel 1 (
+        echo ERROR: python not found in PATH.
+        pause
+        popd
+        exit /b 1
+    )
+    python -m venv venv
+    if errorlevel 1 (
+        echo ERROR: failed to create venv.
+        pause
+        popd
+        exit /b 1
+    )
+    call "venv\Scripts\activate.bat"
+    echo Installing requirements.txt ...
+    python -m pip install -U pip
+    python -m pip install -r requirements.txt
+    if errorlevel 1 (
+        echo ERROR: pip install failed.
+        pause
+        popd
+        exit /b 1
+    )
+) else (
+    call "venv\Scripts\activate.bat"
 )
-call "venv\Scripts\activate.bat"
-echo 虚拟环境: venv
+echo Using venv: venv
 
 REM 3) 确保 PyInstaller 已安装
 echo.
-echo [3/5] 检查 PyInstaller...
+echo [3/5] Checking PyInstaller...
 python -m pip show pyinstaller >nul 2>nul
 if errorlevel 1 (
-    echo 安装 PyInstaller...
+    echo Installing PyInstaller...
     python -m pip install -U pyinstaller
 )
-echo PyInstaller 就绪
+echo PyInstaller ready.
 
-REM 4) 打包
+REM 4) 打包（add-data 必须用绝对路径，避免相对 specpath 解析失败）
 echo.
-echo [4/5] 开始打包...
+echo [4/5] Building with PyInstaller...
 
 python -m PyInstaller ^
   --noconsole ^
   --onefile ^
   --clean ^
   --name "%NAME%" ^
-  --distpath "dist" ^
-  --workpath "build\work" ^
-  --specpath "build\spec" ^
-  --add-data "templates;templates" ^
-  --add-data "static;static" ^
+  --distpath "%ROOT%dist" ^
+  --workpath "%ROOT%build\work" ^
+  --specpath "%ROOT%build\spec" ^
+  --add-data "%ROOT%templates;templates" ^
+  --add-data "%ROOT%static;static" ^
   --hidden-import=outlook_web ^
   --hidden-import=outlook_web.app ^
   --hidden-import=outlook_web.db ^
@@ -73,33 +93,32 @@ python -m PyInstaller ^
   --collect-submodules=cryptography ^
   --collect-submodules=bcrypt ^
   --collect-all=certifi ^
-  --hidden-import=pkg_resources ^
   --hidden-import=pkgutil ^
-  "%PY_FILE%"
+  "%ROOT%%PY_FILE%"
 
 if errorlevel 1 (
     echo.
-    echo 打包失败！常见原因：
-    echo   1. 依赖未安装 - 运行 venv\Scripts\pip install -r requirements.txt
-    echo   2. 模块缺失 - 根据报错添加 --hidden-import
+    echo Build FAILED. Common causes:
+    echo   1. Missing deps - run: venv\Scripts\pip install -r requirements.txt
+    echo   2. Missing module - add --hidden-import based on error
     pause
     popd
     exit /b 1
 )
 
 echo.
-echo [5/5] 打包成功，清理中间产物...
+echo [5/5] Build OK, cleaning temp files...
 if exist "build" rmdir /s /q "build"
 for /d /r %%D in (__pycache__) do @if exist "%%D" rmdir /s /q "%%D"
 
 echo.
 echo ============================================================
-echo 输出文件: dist\%NAME%.exe
+echo Output: dist\%NAME%.exe
 echo.
-echo 使用说明:
-echo   1. 将 dist\%NAME%.exe 复制到目标机器
-echo   2. 首次运行会自动在同目录生成 .env 文件
-echo   3. data\ 目录（数据库）和 .env 文件需保留在 exe 旁边
+echo Usage:
+echo   1. Copy dist\%NAME%.exe to target PC
+echo   2. First run auto-creates .env beside the exe
+echo   3. Keep data\ and .env next to the exe
 echo ============================================================
 echo.
 

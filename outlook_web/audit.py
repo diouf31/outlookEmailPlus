@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 from flask import g
 
 from outlook_web.db import get_db
-from outlook_web.security.auth import get_client_ip
+from outlook_web.security.auth import get_client_ip, get_current_username
 
 
 def log_audit(action: str, resource_type: str, resource_id: str = None, details: str = None):
@@ -19,6 +19,7 @@ def log_audit(action: str, resource_type: str, resource_id: str = None, details:
     try:
         db = get_db()
         user_ip = get_client_ip()
+        operator = get_current_username()
         trace_id_value = None
         try:
             trace_id_value = getattr(g, "trace_id", None)
@@ -26,10 +27,10 @@ def log_audit(action: str, resource_type: str, resource_id: str = None, details:
             trace_id_value = None
         db.execute(
             """
-            INSERT INTO audit_logs (action, resource_type, resource_id, user_ip, details, trace_id)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO audit_logs (action, resource_type, resource_id, user_ip, operator, details, trace_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (action, resource_type, resource_id, user_ip, details, trace_id_value),
+            (action, resource_type, resource_id, user_ip, operator, details, trace_id_value),
         )
         db.commit()
     except Exception:
