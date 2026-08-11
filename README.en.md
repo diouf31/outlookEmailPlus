@@ -36,7 +36,7 @@ The repository already includes some screenshots, and more can be added later.
 
 ## Version Highlights
 
-Current stable version: `v2.2.2`
+Current stable version: `v2.8.0`
 
 ### Recent Version Overview
 
@@ -174,7 +174,7 @@ services:
       - outlook-net
 
   watchtower:
-    image: containrrr/watchtower
+    image: containrrr/watchtower:1.7.1
     container_name: watchtower
     restart: unless-stopped
     volumes:
@@ -208,6 +208,13 @@ Notes:
 2. Uncomment the docker.sock volume mount
 3. Switch "Update Method" to "Docker API" in Settings
 4. ⚠️ Please fully understand the security implications before enabling
+
+> ⚠️ **Troubleshooting**: If Watchtower logs show `client version 1.25 is too old. Minimum supported API version is 1.44`, you likely have a cached old Watchtower image. Fix:
+> ```bash
+> docker compose pull watchtower
+> docker compose up -d watchtower
+> ```
+> This project's `docker-compose.yml` pins Watchtower to `1.7.1` to avoid the issue.
 
 #### ClawCloud / Reverse Proxy Deployment Notes
 

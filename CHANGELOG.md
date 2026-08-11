@@ -4,6 +4,32 @@ All notable changes to OutlookMail Plus are documented in this file.
 
 ## [Unreleased]
 
+## [v2.8.0] - 2026-07-26
+
+在保留本仓库多用户定制的前提下，合入上游 v2.8.0 关键缺陷修复与验证码能力增强（不含 SPA 新前端迁移）。
+
+### 新增功能 / New Features
+
+- **ZER-90 统一验证码提取模块（#119）**：新增 `verification_code_extraction`，将规则提取、选项化提取、置信度门控与对外 API 契约收口；`verification_extractor` 改为兼容层，AI 回退仍保留。
+- **临时邮箱接入邮箱池（#85）**：Cloudflare/custom/gptmail 等临时邮箱可被 `claim-random` 领取并纳入邮箱池调度（schema 记为 **v25**，避免覆盖本仓库多用户 v24）。
+- **Gunicorn 并发启动配置（#84）**：新增 `scripts/start-gunicorn.sh`，默认单 worker + 多线程，降低同步长任务拖死整站的概率。
+
+### 修复 / Bug Fixes
+
+- **IMAP 验证码详情错配（#67）**：按 `paged_ids` 顺序重建 FETCH 结果，并在渠道路由层按 `message_id` 取详情，避免看到 A 邮件却拿到 B 验证码。
+- **验证码大小写被篡改（#103）**：规则分支与 AI 回退路径不再强制 `.upper()`。
+- **OAuth Token scope 校验（#108 / #107）**：Token 工具写入账号时使用授权阶段的显式 scope，避免默认 scope 触发 `AADSTS70000`。
+- **x.ai 连字符验证码识别（#114 / ZER-57）**：支持 `84A-KMN` 等带连字符验证码；修复 HTML 粘连与 CSS 色值误识别。
+- **跨文件夹选取最新验证邮件**：同渠道阶段合并 inbox/junk 后按时间最新优先。
+- **验证码回退链路收敛**：减少不必要的 fallback，并避免 stale-code fallback 返回过期验证码。
+- **Watchtower 镜像版本固定（#65）**：`docker-compose.yml` 固定 `containrrr/watchtower:1.7.1`。
+
+### 重要变更 / Important Changes
+
+- 版本号统一升级为 `2.8.0`。
+- **不包含** SPA 新前端迁移、性能大改（#36）与 domain claim（#105）。
+- 本仓库多用户 schema（v24）保持不变；上游临时邮箱入池迁移顺延为 v25。
+
 ## [v2.5.0] - 2026-05-07
 
 ### 新增功能 / New Features

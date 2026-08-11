@@ -40,7 +40,7 @@ OutlookMail Plus 是一款面向个人与团队的注册邮箱管理器。
 
 ## 版本亮点
 
-当前稳定版本：`v2.2.2`
+当前稳定版本：`v2.8.0`
 
 ### 近期版本速览
 
@@ -178,7 +178,7 @@ services:
       - outlook-net
 
   watchtower:
-    image: containrrr/watchtower
+    image: containrrr/watchtower:1.7.1
     container_name: watchtower
     restart: unless-stopped
     volumes:
@@ -213,6 +213,13 @@ networks:
 2. 取消 docker.sock 挂载注释
 3. 在设置页选择"更新方式"为"Docker API"
 4. ⚠️ 请充分了解安全风险后再启用
+
+> ⚠️ **常见问题**：如果 Watchtower 容器日志中出现 `client version 1.25 is too old. Minimum supported API version is 1.44` 错误，说明你本地缓存了旧版 Watchtower 镜像（内嵌的 Docker 客户端 API 版本过旧）。解决方法：
+> ```bash
+> docker compose pull watchtower    # 拉取最新镜像
+> docker compose up -d watchtower   # 重建容器
+> ```
+> 本项目 `docker-compose.yml` 已固定 Watchtower 版本为 `1.7.1`，可避免此类问题。
 
 #### ClawCloud / 反向代理部署注意事项
 

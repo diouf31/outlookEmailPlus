@@ -18,7 +18,7 @@ class ExtractVerificationGroupPolicyTests(unittest.TestCase):
             clear_login_attempts()
 
     def _login(self, client):
-        resp = client.post("/login", json={"password": "testpass123"})
+        resp = client.post("/login", json={"username": "admin", "password": "testpass123"})
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(resp.get_json().get("success"))
 
