@@ -83,7 +83,7 @@ def main() -> None:
     else:
         print("✓ 调试重载器父进程：跳过启动调度器")
 
-    app.run(debug=debug, host=host, port=port)
+    app.run(debug=debug, host=host, port=port, threaded=True)
 
 
 if __name__ == "__main__":

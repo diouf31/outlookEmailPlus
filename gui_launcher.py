@@ -88,7 +88,12 @@ class FlaskServerThread(threading.Thread):
     def run(self) -> None:
         from werkzeug.serving import make_server
         try:
-            self._server = make_server(self.host, self.port, self.flask_app)
+            # 必须 threaded=True：默认单线程时 Graph/IMAP/SSE 长请求会堵住
+            # 整个 accept 循环，表现为客户端连不上、停止服务也卡住。
+            self._server = make_server(
+                self.host, self.port, self.flask_app, threaded=True
+            )
+            self._server.daemon_threads = True
             self._started.set()
             self._server.serve_forever()
         except Exception as exc:
@@ -96,8 +101,24 @@ class FlaskServerThread(threading.Thread):
             self._started.set()
 
     def shutdown(self) -> None:
-        if self._server:
-            self._server.shutdown()
+        server = self._server
+        if not server:
+            return
+
+        def _do_shutdown() -> None:
+            try:
+                server.shutdown()
+            except Exception:
+                pass
+
+        t = threading.Thread(target=_do_shutdown, daemon=True, name="FlaskShutdown")
+        t.start()
+        t.join(timeout=3.0)
+        if t.is_alive():
+            try:
+                server.server_close()
+            except Exception:
+                pass
 
     def wait_started(self, timeout: float = 8.0) -> bool:
         return self._started.wait(timeout=timeout)
@@ -312,6 +333,7 @@ class LauncherApp:
         if self._server_thread and self._server_thread.is_alive():
             if messagebox.askyesno("退出确认", "服务正在运行，确定要停止并退出吗？"):
                 self._server_thread.shutdown()
+                self._server_thread.join(timeout=3)
                 self.root.destroy()
         else:
             self.root.destroy()
