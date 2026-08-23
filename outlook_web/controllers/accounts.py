@@ -118,6 +118,53 @@ def _outlook_basic_auth_import_error() -> str:
     return "Outlook 邮箱不支持 IMAP Basic Auth 直连（包括 custom host 导入），请使用 4 段 OAuth 格式：邮箱----密码----client_id----refresh_token"
 
 
+_EMAIL_ADDR_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _looks_like_email(value: str) -> bool:
+    return bool(_EMAIL_ADDR_RE.match((value or "").strip()))
+
+
+def _outlook_aux_remark(aux_email: str, aux_password: str) -> str:
+    aux_email = (aux_email or "").strip()
+    if not aux_email:
+        return ""
+    if aux_password:
+        return f"辅助邮箱: {aux_email}----{aux_password}"
+    return f"辅助邮箱: {aux_email}"
+
+
+def _parse_outlook_oauth_parts(parts: list[str]) -> Optional[Dict[str, str]]:
+    """解析 Outlook OAuth 行（split('----') 之后的各段）。
+
+    4 段：邮箱----密码----client_id----refresh_token
+    6 段：邮箱----密码----client_id----refresh_token----辅助邮箱----辅助密码
+    refresh_token 本身也可能含 ----；仅当倒数第二段像邮箱时，才把最后两段当作辅助凭据。
+    """
+    if len(parts) < 4:
+        return None
+    email = (parts[0] or "").strip()
+    password = parts[1] if len(parts) > 1 else ""
+    client_id = (parts[2] or "").strip()
+    aux_email = ""
+    aux_password = ""
+    if len(parts) >= 6 and _looks_like_email(parts[-2]):
+        refresh_token = "----".join(parts[3:-2]).strip()
+        aux_email = (parts[-2] or "").strip()
+        aux_password = parts[-1] or ""
+    else:
+        refresh_token = "----".join(parts[3:]).strip()
+    return {
+        "email": email,
+        "password": password,
+        "client_id": client_id,
+        "refresh_token": refresh_token,
+        "aux_email": aux_email,
+        "aux_password": aux_password,
+        "remark": _outlook_aux_remark(aux_email, aux_password),
+    }
+
+
 # ==================== 账号基础 CRUD API ====================
 
 
@@ -346,17 +393,8 @@ def api_add_account() -> Any:
         return text
 
     def parse_account_string(line: str) -> Optional[Dict[str, str]]:
-        """解析账号字符串（格式：email----password----client_id----refresh_token）"""
-        parts = line.strip().split("----")
-        if len(parts) >= 4:
-            return {
-                "email": parts[0].strip(),
-                "password": parts[1],
-                "client_id": parts[2].strip(),
-                # refresh_token 可能包含 '----'，这里把剩余部分合并回去
-                "refresh_token": "----".join(parts[3:]).strip(),
-            }
-        return None
+        """解析账号字符串（4 段 OAuth，或 6 段 OAuth+辅助邮箱）。"""
+        return _parse_outlook_oauth_parts(line.strip().split("----"))
 
     def is_comment_line(line: str) -> bool:
         return bool(line) and line.lstrip().startswith("#")
@@ -648,7 +686,7 @@ def api_add_account() -> Any:
                 errors.append(
                     {
                         "line": line_no,
-                        "error": "格式错误，应为：邮箱----密码----client_id----refresh_token",
+                        "error": "格式错误，应为：邮箱----密码----client_id----refresh_token（可再加 ----辅助邮箱----辅助密码）",
                     }
                 )
             continue
@@ -685,6 +723,7 @@ def api_add_account() -> Any:
             client_id,
             refresh_token,
             group_id,
+            remark=sanitize_credential_field(parsed.get("remark"), 200),
             add_to_pool=add_to_pool,
             db=db,
             commit=False,
@@ -832,22 +871,23 @@ def _detect_line_type(
                 "auto_group_name": PROVIDER_GROUP_NAME.get("custom", "自定义IMAP"),
             }
 
-    # n >= 4 → Outlook（OAuth）
+    # n >= 4 → Outlook（OAuth；6 段时末两段为辅助邮箱/密码）
     if n >= 4:
-        email = parts[0].strip()
-        password = parts[1].strip()
-        client_id = parts[2].strip()
-        refresh_token = "----".join(parts[3:]).strip()
-        if not email or not client_id or not refresh_token:
+        parsed = _parse_outlook_oauth_parts(parts)
+        email = (parsed or {}).get("email", "")
+        client_id = (parsed or {}).get("client_id", "")
+        refresh_token = (parsed or {}).get("refresh_token", "")
+        if not parsed or not email or not client_id or not refresh_token:
             return _err("Outlook 格式缺少 client_id 或 refresh_token")
         return {
             "type": "outlook",
             "provider": "outlook",
             "fields": {
                 "email": email,
-                "password": password,
+                "password": parsed.get("password", ""),
                 "client_id": client_id,
                 "refresh_token": refresh_token,
+                "remark": parsed.get("remark", ""),
             },
             "error": None,
             "auto_group_name": PROVIDER_GROUP_NAME.get("outlook", "Outlook"),
@@ -979,7 +1019,7 @@ def _resolve_auto_group(
 
 
 def _overwrite_account(existing: Dict, detect_result: Dict, group_id: int, add_to_pool: bool = False) -> bool:
-    """覆盖更新已存在账号的凭据字段，保留 remark/tags/status。"""
+    """覆盖更新已存在账号的凭据字段，保留 tags/status；6 段导入时写入辅助邮箱备注。"""
     fields: Dict[str, Any] = {"group_id": group_id}
     d = detect_result
     prov = d["provider"]
@@ -991,6 +1031,9 @@ def _overwrite_account(existing: Dict, detect_result: Dict, group_id: int, add_t
         fields["refresh_token"] = f.get("refresh_token", "")
         fields["account_type"] = "outlook"
         fields["provider"] = "outlook"
+        remark = (f.get("remark") or "").strip()
+        if remark:
+            fields["remark"] = remark[:200]
     elif d["type"] == "imap":
         fields["imap_password"] = f.get("imap_password", "")
         fields["imap_host"] = f.get("imap_host", "")
@@ -1239,6 +1282,7 @@ def _handle_auto_import(data: Dict[str, Any], *, add_to_pool: bool = False) -> A
                 client_id=fields.get("client_id", ""),
                 refresh_token=fields.get("refresh_token", ""),
                 group_id=group_id,
+                remark=(fields.get("remark") or "")[:200],
                 account_type="outlook",
                 provider="outlook",
                 add_to_pool=add_to_pool,

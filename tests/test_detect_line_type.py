@@ -31,6 +31,26 @@ class TestDetectLineType(unittest.TestCase):
         self.assertEqual(r["type"], "outlook")
         self.assertEqual(r["fields"]["refresh_token"], "part1----part2----part3")
 
+    def test_outlook_6_parts_with_aux_email(self):
+        line = (
+            "user@outlook.com----pwd----9e5f94bc-e8a4-4e73-b8be-63364c29d753"
+            "----M.C514_BL2.token$$----aux@pyyemail.cc----AuxPass1"
+        )
+        r = self._detect(line)
+        self.assertEqual(r["type"], "outlook")
+        self.assertEqual(r["fields"]["email"], "user@outlook.com")
+        self.assertEqual(r["fields"]["password"], "pwd")
+        self.assertEqual(r["fields"]["client_id"], "9e5f94bc-e8a4-4e73-b8be-63364c29d753")
+        self.assertEqual(r["fields"]["refresh_token"], "M.C514_BL2.token$$")
+        self.assertEqual(r["fields"]["remark"], "辅助邮箱: aux@pyyemail.cc----AuxPass1")
+
+    def test_outlook_token_contains_separator_and_aux_email(self):
+        line = "u@o.com----p----cid----part1----part2----aux@mail.cc----auxpwd"
+        r = self._detect(line)
+        self.assertEqual(r["type"], "outlook")
+        self.assertEqual(r["fields"]["refresh_token"], "part1----part2")
+        self.assertEqual(r["fields"]["remark"], "辅助邮箱: aux@mail.cc----auxpwd")
+
     def test_imap_4_parts_host_port_detected_as_custom(self):
         r = self._detect("user@corp.com----pwd123----imap.corp.com----993")
         self.assertEqual(r["type"], "imap")
