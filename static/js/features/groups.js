@@ -347,26 +347,15 @@
                 </div>
             `}).join('');
 
-            // ===== 分页控件：总账号数超过一页时显示 =====
-            if (totalPages > 1) {
+            // ===== 分页控件：账号存在时显示（含每页条数选择）=====
+            if (totalAccounts > 0) {
                 const paginationEl = document.createElement('div');
-                paginationEl.className = 'account-pagination';
-                paginationEl.innerHTML = `
-                    <button class="page-btn page-btn-prev"
-                            onclick="goToAccountPage(${currentAccountPage - 1})"
-                            ${currentAccountPage <= 1 ? 'disabled' : ''}>
-                        ◀
-                    </button>
-                    <span class="page-info">
-                        ${currentAccountPage} / ${totalPages} ${translateAppTextLocal('页')} &nbsp;·&nbsp; ${translateAppTextLocal('共')} ${totalAccounts} ${translateAppTextLocal('个账号')}
-                    </span>
-                    <button class="page-btn page-btn-next"
-                            onclick="goToAccountPage(${currentAccountPage + 1})"
-                            ${currentAccountPage >= totalPages ? 'disabled' : ''}>
-                        ▶
-                    </button>
-                `;
-                container.appendChild(paginationEl);
+                paginationEl.innerHTML = buildAccountPaginationHtml({
+                    page: currentAccountPage,
+                    total_pages: totalPages,
+                    total_count: totalAccounts,
+                });
+                container.appendChild(paginationEl.firstElementChild);
             }
 
             updateSelectAllCheckbox();
@@ -399,9 +388,75 @@
 
         // 账号列表分页状态
         let currentAccountPage = 1;
-        const ACCOUNT_PAGE_SIZE = 50;
+        let accountPageSize = 50;
+        const ACCOUNT_PAGE_SIZE_OPTIONS = [50, 100, 500, 1000];
         let currentAccountSearchQuery = '';
         const accountListMetaCache = {};
+
+        function getAccountPageSize() {
+            const size = Number(accountPageSize) || 50;
+            return ACCOUNT_PAGE_SIZE_OPTIONS.includes(size) ? size : 50;
+        }
+
+        function setAccountPageSize(size) {
+            const next = Number(size) || 50;
+            accountPageSize = ACCOUNT_PAGE_SIZE_OPTIONS.includes(next) ? next : 50;
+            try {
+                localStorage.setItem('accountPageSize', String(accountPageSize));
+            } catch (e) { /* ignore */ }
+            currentAccountPage = 1;
+            if (currentGroupId) {
+                Object.keys(accountListMetaCache).forEach((key) => delete accountListMetaCache[key]);
+                Object.keys(accountsCache).forEach((key) => delete accountsCache[key]);
+                loadAccountsByGroup(currentGroupId, true, 1);
+            }
+        }
+
+        (function initAccountPageSizeFromStorage() {
+            try {
+                const saved = Number(localStorage.getItem('accountPageSize') || 50);
+                if (ACCOUNT_PAGE_SIZE_OPTIONS.includes(saved)) {
+                    accountPageSize = saved;
+                }
+            } catch (e) { /* ignore */ }
+        })();
+
+        function buildAccountPaginationHtml(pagination) {
+            const totalAccounts = Number(pagination.total_count || 0);
+            const totalPages = Number(pagination.total_pages || 0);
+            const page = Number(pagination.page || 1);
+            const sizeOptions = ACCOUNT_PAGE_SIZE_OPTIONS.map((size) => {
+                const selected = size === getAccountPageSize() ? 'selected' : '';
+                return `<option value="${size}" ${selected}>${size}</option>`;
+            }).join('');
+            const navDisabledPrev = page <= 1 ? 'disabled' : '';
+            const navDisabledNext = page >= totalPages || totalPages <= 1 ? 'disabled' : '';
+            return `
+                <div class="account-pagination">
+                    <label class="page-size-label">
+                        ${translateAppTextLocal('每页')}
+                        <select class="page-size-select" onchange="setAccountPageSize(this.value)">
+                            ${sizeOptions}
+                        </select>
+                    </label>
+                    <button class="page-btn page-btn-prev"
+                            onclick="goToAccountPage(${page - 1})"
+                            ${navDisabledPrev}>
+                        ◀
+                    </button>
+                    <span class="page-info">
+                        ${page} / ${Math.max(totalPages, 1)} ${translateAppTextLocal('页')}
+                        &nbsp;·&nbsp;
+                        ${translateAppTextLocal('共')} ${totalAccounts} ${translateAppTextLocal('个账号')}
+                    </span>
+                    <button class="page-btn page-btn-next"
+                            onclick="goToAccountPage(${page + 1})"
+                            ${navDisabledNext}>
+                        ▶
+                    </button>
+                </div>
+            `;
+        }
 
         function getSelectedTagFilterIds() {
             return Array.from(document.querySelectorAll('.tag-filter-checkbox:checked'))
@@ -415,7 +470,7 @@
                 params.set('group_id', String(groupId));
             }
             params.set('page', String(page || 1));
-            params.set('page_size', String(ACCOUNT_PAGE_SIZE));
+            params.set('page_size', String(getAccountPageSize()));
             params.set('sort_by', currentSortBy);
             params.set('sort_order', currentSortOrder);
 
@@ -439,7 +494,7 @@
             const fallbackAccounts = Array.isArray(accountsCache[groupId]) ? accountsCache[groupId] : [];
             return {
                 page: currentAccountPage,
-                page_size: ACCOUNT_PAGE_SIZE,
+                page_size: getAccountPageSize(),
                 total_count: fallbackAccounts.length,
                 total_pages: fallbackAccounts.length > 0 ? 1 : 0,
                 queryKey: ''
@@ -450,12 +505,12 @@
             const safeAccounts = Array.isArray(accounts) ? accounts : [];
             const safePagination = pagination && typeof pagination === 'object'
                 ? pagination
-                : { page: currentAccountPage || 1, page_size: ACCOUNT_PAGE_SIZE, total_count: safeAccounts.length, total_pages: safeAccounts.length > 0 ? 1 : 0 };
+                : { page: currentAccountPage || 1, page_size: getAccountPageSize(), total_count: safeAccounts.length, total_pages: safeAccounts.length > 0 ? 1 : 0 };
 
             accountsCache[groupId] = safeAccounts;
             accountListMetaCache[groupId] = {
                 page: Number(safePagination.page || 1),
-                page_size: Number(safePagination.page_size || ACCOUNT_PAGE_SIZE),
+                page_size: Number(safePagination.page_size || getAccountPageSize()),
                 total_count: Number(safePagination.total_count || 0),
                 total_pages: Number(safePagination.total_pages || 0),
                 queryKey

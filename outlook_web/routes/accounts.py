@@ -59,6 +59,11 @@ def create_blueprint() -> Blueprint:
         methods=["POST"],
     )
     bp.add_url_rule(
+        "/api/accounts/delete-all",
+        view_func=accounts_controller.api_delete_all_accounts,
+        methods=["POST"],
+    )
+    bp.add_url_rule(
         "/api/accounts/batch-update-status",
         view_func=accounts_controller.api_batch_update_status,
         methods=["POST"],

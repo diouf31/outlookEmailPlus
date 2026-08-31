@@ -322,26 +322,8 @@
                 `;
             }).join('');
 
-            if (Number(pagination.total_pages || 0) > 1) {
-                container.innerHTML += `
-                    <div class="account-pagination compact-account-pagination">
-                        <button class="page-btn page-btn-prev"
-                                onclick="goToAccountPage(${Number(pagination.page || 1) - 1})"
-                                ${Number(pagination.page || 1) <= 1 ? 'disabled' : ''}>
-                            ◀
-                        </button>
-                        <span class="page-info">
-                            ${Number(pagination.page || 1)} / ${Number(pagination.total_pages || 0)} ${escapeHtml(translateCompactText('页'))}
-                            &nbsp;·&nbsp;
-                            ${escapeHtml(translateCompactText('共'))} ${Number(pagination.total_count || 0)} ${escapeHtml(translateCompactText('个账号'))}
-                        </span>
-                        <button class="page-btn page-btn-next"
-                                onclick="goToAccountPage(${Number(pagination.page || 1) + 1})"
-                                ${Number(pagination.page || 1) >= Number(pagination.total_pages || 0) ? 'disabled' : ''}>
-                            ▶
-                        </button>
-                    </div>
-                `;
+            if (Number(pagination.total_count || 0) > 0 && typeof buildAccountPaginationHtml === 'function') {
+                container.innerHTML += buildAccountPaginationHtml(pagination);
             }
 
             updateSelectAllCheckbox();

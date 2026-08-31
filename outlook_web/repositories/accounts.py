@@ -609,28 +609,81 @@ def update_account(
 
 
 def delete_account_by_id(account_id: int) -> bool:
-    """删除邮箱账号"""
+    """删除邮箱账号（绑定当前用户，避免跨用户误删）"""
     db = get_db()
     try:
+        user_id = get_current_user_id()
+        if user_id:
+            row = db.execute(
+                "SELECT id FROM accounts WHERE id = ? AND user_id = ?",
+                (account_id, user_id),
+            ).fetchone()
+            if not row:
+                return False
         db.execute("DELETE FROM account_claim_logs WHERE account_id = ?", (account_id,))
         db.execute("DELETE FROM account_project_usage WHERE account_id = ?", (account_id,))
         cursor = db.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
         db.commit()
-        return True
+        return cursor.rowcount > 0
     except Exception:
         return False
 
 
 def delete_account_by_email(email_addr: str) -> bool:
-    """根据邮箱地址删除账号"""
+    """根据邮箱地址删除账号（按当前用户隔离）"""
     db = get_db()
     try:
-        row = db.execute("SELECT id FROM accounts WHERE email = ?", (email_addr,)).fetchone()
+        user_id = get_current_user_id()
+        if user_id:
+            row = db.execute(
+                "SELECT id FROM accounts WHERE email = ? AND user_id = ?",
+                (email_addr, user_id),
+            ).fetchone()
+        else:
+            row = db.execute("SELECT id FROM accounts WHERE email = ?", (email_addr,)).fetchone()
         if not row:
             return False
         return delete_account_by_id(int(row["id"]))
     except Exception:
         return False
+
+
+def delete_all_accounts_for_current_user(*, group_id: Optional[int] = None) -> Dict[str, int]:
+    """删除当前用户全部（或指定分组）账号，跳过邮箱池 CF 临时邮箱。"""
+    db = get_db()
+    user_id = get_current_user_id() or 1
+    params: List[Any] = [user_id]
+    where_sql = "user_id = ?"
+    if group_id is not None:
+        where_sql += " AND group_id = ?"
+        params.append(int(group_id))
+
+    rows = db.execute(
+        f"SELECT id, provider FROM accounts WHERE {where_sql}",
+        params,
+    ).fetchall()
+
+    deleted_count = 0
+    skipped_count = 0
+    for row in rows:
+        provider = str(row["provider"] or "").lower()
+        if provider == "cloudflare_temp_mail":
+            skipped_count += 1
+            continue
+        account_id = int(row["id"])
+        try:
+            db.execute("DELETE FROM account_claim_logs WHERE account_id = ?", (account_id,))
+            db.execute("DELETE FROM account_project_usage WHERE account_id = ?", (account_id,))
+            cursor = db.execute(
+                "DELETE FROM accounts WHERE id = ? AND user_id = ?",
+                (account_id, user_id),
+            )
+            if cursor.rowcount > 0:
+                deleted_count += 1
+        except Exception:
+            continue
+    db.commit()
+    return {"deleted_count": deleted_count, "skipped_count": skipped_count}
 
 
 def update_account_credentials(account_id: int, **fields) -> bool:

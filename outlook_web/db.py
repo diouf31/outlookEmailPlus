@@ -39,7 +39,8 @@ from outlook_web.security.crypto import (
 # v23：2026-04-19 数据概览大盘（verification_extract_logs + overview 兼容字段）
 # v24：多用户支持 — users 表 + accounts/groups/tags 增加 user_id 列隔离数据
 # v25：临时邮箱接入邮箱池（temp_emails 新增池生命周期字段：pool_status/claimed_by/...，可被 claim-random 领取）
-DB_SCHEMA_VERSION = 25
+# v26：accounts 邮箱唯一性改为按用户隔离 UNIQUE(email, user_id)，允许不同用户导入相同邮箱
+DB_SCHEMA_VERSION = 26
 DB_SCHEMA_VERSION_KEY = "db_schema_version"
 DB_SCHEMA_LAST_UPGRADE_TRACE_ID_KEY = "db_schema_last_upgrade_trace_id"
 DB_SCHEMA_LAST_UPGRADE_ERROR_KEY = "db_schema_last_upgrade_error"
@@ -199,11 +200,11 @@ def init_db(database_path: Optional[str] = None):
             )
         """)
 
-        # 邮箱账号表
+        # 邮箱账号表（email 唯一性按 user_id 隔离，允许不同用户导入相同邮箱）
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS accounts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                email TEXT UNIQUE NOT NULL,
+                email TEXT NOT NULL,
                 password TEXT,
                 client_id TEXT NOT NULL,
                 refresh_token TEXT NOT NULL,
@@ -218,6 +219,8 @@ def init_db(database_path: Optional[str] = None):
                 last_refresh_at TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                user_id INTEGER DEFAULT 1,
+                UNIQUE(email, user_id),
                 FOREIGN KEY (group_id) REFERENCES groups (id)
             )
         """)
@@ -1327,6 +1330,155 @@ def init_db(database_path: Optional[str] = None):
             SET prefix = substr(email, 1, instr(email, '@') - 1)
             WHERE (prefix IS NULL OR prefix = '') AND instr(email, '@') > 0
             """)
+
+        # v26: accounts 邮箱唯一性改为按用户隔离（UNIQUE(email, user_id)）
+        # 旧库为全局 email UNIQUE，会导致不同用户无法导入相同邮箱。
+        if current_version < 26:
+            schema_row = cursor.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='accounts'"
+            ).fetchone()
+            schema_sql = str(schema_row[0] or "") if schema_row else ""
+            already_scoped = "unique(email, user_id)" in schema_sql.lower()
+            if not already_scoped:
+                cursor.execute("PRAGMA table_info(accounts)")
+                existing_cols = [col[1] for col in cursor.fetchall()]
+                if "user_id" not in existing_cols:
+                    cursor.execute("ALTER TABLE accounts ADD COLUMN user_id INTEGER DEFAULT 1")
+                    cursor.execute("UPDATE accounts SET user_id = 1 WHERE user_id IS NULL")
+                    existing_cols.append("user_id")
+
+                cursor.execute("""
+                    CREATE TABLE accounts_v26 (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        email TEXT NOT NULL,
+                        password TEXT,
+                        client_id TEXT NOT NULL,
+                        refresh_token TEXT NOT NULL,
+                        account_type TEXT DEFAULT 'outlook',
+                        provider TEXT DEFAULT 'outlook',
+                        imap_host TEXT,
+                        imap_port INTEGER DEFAULT 993,
+                        imap_password TEXT,
+                        group_id INTEGER,
+                        remark TEXT,
+                        status TEXT DEFAULT 'active',
+                        last_refresh_at TIMESTAMP,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        telegram_push_enabled INTEGER NOT NULL DEFAULT 0,
+                        telegram_last_checked_at TEXT DEFAULT NULL,
+                        latest_email_subject TEXT DEFAULT '',
+                        latest_email_from TEXT DEFAULT '',
+                        latest_email_folder TEXT DEFAULT '',
+                        latest_email_received_at TEXT DEFAULT '',
+                        latest_verification_code TEXT DEFAULT '',
+                        latest_verification_folder TEXT DEFAULT '',
+                        latest_verification_received_at TEXT DEFAULT '',
+                        user_id INTEGER DEFAULT 1,
+                        pool_status TEXT DEFAULT NULL,
+                        claimed_by TEXT DEFAULT NULL,
+                        claimed_at TEXT DEFAULT NULL,
+                        lease_expires_at TEXT DEFAULT NULL,
+                        claim_token TEXT DEFAULT NULL,
+                        last_claimed_at TEXT DEFAULT NULL,
+                        last_result TEXT DEFAULT NULL,
+                        last_result_detail TEXT DEFAULT NULL,
+                        success_count INTEGER DEFAULT 0,
+                        fail_count INTEGER DEFAULT 0,
+                        email_domain TEXT DEFAULT NULL,
+                        temp_mail_meta TEXT,
+                        preferred_verification_channel TEXT,
+                        claimed_project_key TEXT DEFAULT NULL,
+                        UNIQUE(email, user_id),
+                        FOREIGN KEY (group_id) REFERENCES groups (id)
+                    )
+                """)
+
+                target_cols = [
+                    "id",
+                    "email",
+                    "password",
+                    "client_id",
+                    "refresh_token",
+                    "account_type",
+                    "provider",
+                    "imap_host",
+                    "imap_port",
+                    "imap_password",
+                    "group_id",
+                    "remark",
+                    "status",
+                    "last_refresh_at",
+                    "created_at",
+                    "updated_at",
+                    "telegram_push_enabled",
+                    "telegram_last_checked_at",
+                    "latest_email_subject",
+                    "latest_email_from",
+                    "latest_email_folder",
+                    "latest_email_received_at",
+                    "latest_verification_code",
+                    "latest_verification_folder",
+                    "latest_verification_received_at",
+                    "user_id",
+                    "pool_status",
+                    "claimed_by",
+                    "claimed_at",
+                    "lease_expires_at",
+                    "claim_token",
+                    "last_claimed_at",
+                    "last_result",
+                    "last_result_detail",
+                    "success_count",
+                    "fail_count",
+                    "email_domain",
+                    "temp_mail_meta",
+                    "preferred_verification_channel",
+                    "claimed_project_key",
+                ]
+                select_exprs = []
+                for col in target_cols:
+                    if col in existing_cols:
+                        select_exprs.append(col)
+                    elif col == "user_id":
+                        select_exprs.append("1 AS user_id")
+                    elif col in ("success_count", "fail_count", "telegram_push_enabled"):
+                        select_exprs.append(f"0 AS {col}")
+                    elif col in (
+                        "latest_email_subject",
+                        "latest_email_from",
+                        "latest_email_folder",
+                        "latest_email_received_at",
+                        "latest_verification_code",
+                        "latest_verification_folder",
+                        "latest_verification_received_at",
+                    ):
+                        select_exprs.append(f"'' AS {col}")
+                    else:
+                        select_exprs.append(f"NULL AS {col}")
+
+                cursor.execute(
+                    f"""
+                    INSERT INTO accounts_v26 ({", ".join(target_cols)})
+                    SELECT {", ".join(select_exprs)} FROM accounts
+                    """
+                )
+                cursor.execute("DROP TABLE accounts")
+                cursor.execute("ALTER TABLE accounts_v26 RENAME TO accounts")
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_accounts_last_refresh_at ON accounts(last_refresh_at)"
+                )
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_accounts_status ON accounts(status)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_accounts_group_id ON accounts(group_id)")
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_accounts_pool_status ON accounts(pool_status)"
+                )
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_accounts_email_domain ON accounts(email_domain)"
+                )
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_accounts_user_id ON accounts(user_id)"
+                )
 
         # 迁移现有明文数据为加密数据
         migrate_sensitive_data(conn)

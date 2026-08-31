@@ -218,6 +218,7 @@
                             <button class="btn btn-sm sort-btn active" data-sort="refresh_time" onclick="sortAccounts('refresh_time')">🕐 刷新时间</button>
                             <button class="btn btn-sm sort-btn" data-sort="email" onclick="sortAccounts('email')">📧 邮箱名</button>
                             <div style="margin-left:auto;display:flex;align-items:center;gap:4px;">
+                                <button class="btn btn-sm btn-danger" onclick="showDeleteAllAccountsConfirm()" title="删除当前用户的全部邮箱" style="font-size:0.72rem;padding:2px 8px;">删除全部</button>
                                 <input type="checkbox" id="selectAllCheckbox" onclick="toggleSelectAll()" style="cursor:pointer;">
                                 <label for="selectAllCheckbox" style="font-size:0.72rem;color:var(--text-muted);cursor:pointer;">全选</label>
                             </div>
@@ -238,6 +239,7 @@
                             <button class="btn btn-sm btn-ghost" onclick="showBatchFetchConfirm()">批量拉取邮件</button>
                             <button class="btn btn-sm btn-primary" onclick="showBatchRefreshConfirm()">🔄 刷新 Token</button>
                             <button class="btn btn-sm btn-danger" onclick="showBatchDeleteConfirm()">删除</button>
+                            <button class="btn btn-sm btn-danger" onclick="showDeleteAllAccountsConfirm()">删除全部</button>
                         </div>
                     </div>
 
@@ -341,6 +343,7 @@
                                 <button class="btn-inline" onclick="showBatchMoveGroupModal()">移动分组</button>
                                 <button class="btn-inline" onclick="showBatchRefreshConfirm()">🔄 刷新 Token</button>
                                 <button class="btn-inline primary" onclick="showBatchDeleteConfirm()">删除</button>
+                                <button class="btn-inline primary" onclick="showDeleteAllAccountsConfirm()">删除全部</button>
                             </div>
                         </div>
                     </div>

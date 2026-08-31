@@ -4404,6 +4404,69 @@ ${details}
             batchDeleteAccounts();
         }
 
+        // 删除当前用户全部导入邮箱
+        async function showDeleteAllAccountsConfirm() {
+            let totalCount = 0;
+            try {
+                const resp = await fetch('/api/accounts?page=1&page_size=50');
+                const data = await resp.json();
+                if (data && data.success && data.pagination) {
+                    totalCount = Number(data.pagination.total_count || 0);
+                }
+            } catch (e) { /* ignore */ }
+
+            if (totalCount <= 0) {
+                showToast(translateAppTextLocal('当前没有可删除的账号'), 'error');
+                return;
+            }
+
+            const msg1 = (
+                translateAppTextLocal('确定删除当前用户的全部')
+                + ` ${totalCount} `
+                + translateAppTextLocal('个邮箱吗？邮箱池 CF 账号会自动跳过。此操作不可恢复！')
+            );
+            if (!confirm(msg1)) {
+                return;
+            }
+            const msg2 = translateAppTextLocal('再次确认：真的要删除全部邮箱吗？');
+            if (!confirm(msg2)) {
+                return;
+            }
+
+            await deleteAllAccounts();
+        }
+
+        async function deleteAllAccounts() {
+            await initCSRFToken();
+            try {
+                const response = await fetch('/api/accounts/delete-all', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ confirm: 'delete_all' }),
+                });
+                const data = await response.json();
+                if (data.success) {
+                    showToast(pickApiMessage(data, data.message, 'Accounts deleted successfully'), 'success');
+                    selectedAccountIds.clear();
+                    if (typeof loadGroups === 'function') {
+                        loadGroups();
+                    }
+                    if (currentGroupId) {
+                        delete accountsCache[currentGroupId];
+                        if (typeof accountListMetaCache !== 'undefined') {
+                            delete accountListMetaCache[currentGroupId];
+                        }
+                        loadAccountsByGroup(currentGroupId, true, 1);
+                    }
+                    updateBatchActionBar();
+                } else {
+                    handleApiError(data, '删除失败');
+                }
+            } catch (error) {
+                showToast(translateAppTextLocal('删除失败'), 'error');
+            }
+        }
+
         // 批量删除账号
         async function batchDeleteAccounts() {
             const accountIds = Array.from(selectedAccountIds);

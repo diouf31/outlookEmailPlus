@@ -27,7 +27,9 @@ from outlook_web.repositories.distributed_locks import (
     release_distributed_lock,
 )
 from outlook_web.repositories.refresh_runs import create_refresh_run, finish_refresh_run
-from outlook_web.security.auth import get_client_ip, get_user_agent, login_required
+from outlook_web.security.auth import get_client_ip, get_current_user_id, get_user_agent, login_required
+
+ACCOUNT_PAGE_SIZE_ALLOWED = (50, 100, 500, 1000)
 from outlook_web.security.crypto import decrypt_data
 from outlook_web.services import graph as graph_service
 from outlook_web.services import refresh as refresh_service
@@ -180,7 +182,9 @@ def api_get_accounts() -> Any:
 
     if page < 1:
         page = 1
-    page_size = max(1, min(page_size, 100))
+    if page_size not in ACCOUNT_PAGE_SIZE_ALLOWED:
+        # 兼容旧客户端：裁剪到最近的允许值
+        page_size = min(ACCOUNT_PAGE_SIZE_ALLOWED, key=lambda size: abs(size - int(page_size or 50)))
     if sort_by not in {"refresh_time", "email"}:
         sort_by = "refresh_time"
     if sort_order not in {"asc", "desc"}:
@@ -619,7 +623,11 @@ def api_add_account() -> Any:
             errors_total += 1
             reason = "写入失败"
             try:
-                exists = db.execute("SELECT 1 FROM accounts WHERE email = ? LIMIT 1", (email_addr,)).fetchone()
+                owner_user_id = get_current_user_id() or 1
+                exists = db.execute(
+                    "SELECT 1 FROM accounts WHERE email = ? AND user_id = ? LIMIT 1",
+                    (email_addr, owner_user_id),
+                ).fetchone()
                 if exists:
                     reason = "邮箱已存在"
             except Exception:
@@ -736,7 +744,11 @@ def api_add_account() -> Any:
         errors_total += 1
         reason = "写入失败"
         try:
-            exists = db.execute("SELECT 1 FROM accounts WHERE email = ? LIMIT 1", (email_addr,)).fetchone()
+            owner_user_id = get_current_user_id() or 1
+            exists = db.execute(
+                "SELECT 1 FROM accounts WHERE email = ? AND user_id = ? LIMIT 1",
+                (email_addr, owner_user_id),
+            ).fetchone()
             if exists:
                 reason = "邮箱已存在"
         except Exception:
@@ -1313,7 +1325,11 @@ def _handle_auto_import(data: Dict[str, Any], *, add_to_pool: bool = False) -> A
             by_provider[prov]["failed"] += 1
             reason = "写入失败"
             try:
-                exists = get_db().execute("SELECT 1 FROM accounts WHERE email = ? LIMIT 1", (email,)).fetchone()
+                owner_user_id = get_current_user_id() or 1
+                exists = get_db().execute(
+                    "SELECT 1 FROM accounts WHERE email = ? AND user_id = ? LIMIT 1",
+                    (email, owner_user_id),
+                ).fetchone()
                 if exists:
                     reason = "邮箱已存在"
             except Exception:
@@ -1672,17 +1688,30 @@ def api_delete_account(account_id: int) -> Any:
     email_addr = ""
     try:
         db = get_db()
-        row = db.execute("SELECT email, provider FROM accounts WHERE id = ?", (account_id,)).fetchone()
-        if row:
-            email_addr = row["email"]
-            # 邮箱池管理的 CF 临时邮箱不允许手动删除
-            if (row["provider"] or "").lower() == "cloudflare_temp_mail":
-                return build_error_response(
-                    "POOL_ACCOUNT_DELETE_DENIED",
-                    "邮箱池管理的 CF 临时邮箱不允许手动删除，请通过邮箱池接口释放",
-                    message_en="CF temp mail accounts managed by pool cannot be deleted manually. Use pool release API instead.",
-                    status=403,
-                )
+        owner_user_id = get_current_user_id()
+        if owner_user_id:
+            row = db.execute(
+                "SELECT email, provider FROM accounts WHERE id = ? AND user_id = ?",
+                (account_id, owner_user_id),
+            ).fetchone()
+        else:
+            row = db.execute("SELECT email, provider FROM accounts WHERE id = ?", (account_id,)).fetchone()
+        if not row:
+            return build_error_response(
+                "ACCOUNT_NOT_FOUND",
+                "账号不存在",
+                message_en="Account not found",
+                status=404,
+            )
+        email_addr = row["email"]
+        # 邮箱池管理的 CF 临时邮箱不允许手动删除
+        if (row["provider"] or "").lower() == "cloudflare_temp_mail":
+            return build_error_response(
+                "POOL_ACCOUNT_DELETE_DENIED",
+                "邮箱池管理的 CF 临时邮箱不允许手动删除，请通过邮箱池接口释放",
+                message_en="CF temp mail accounts managed by pool cannot be deleted manually. Use pool release API instead.",
+                status=403,
+            )
     except Exception:
         email_addr = ""
     if accounts_repo.delete_account_by_id(account_id):
@@ -1705,7 +1734,14 @@ def api_delete_account(account_id: int) -> Any:
 def api_delete_account_by_email(email_addr: str) -> Any:
     """根据邮箱地址删除账号（邮箱池管理的 CF 临时邮箱不允许手动删除）"""
     db = get_db()
-    row = db.execute("SELECT provider FROM accounts WHERE email = ?", (email_addr,)).fetchone()
+    owner_user_id = get_current_user_id()
+    if owner_user_id:
+        row = db.execute(
+            "SELECT provider FROM accounts WHERE email = ? AND user_id = ?",
+            (email_addr, owner_user_id),
+        ).fetchone()
+    else:
+        row = db.execute("SELECT provider FROM accounts WHERE email = ?", (email_addr,)).fetchone()
     if row and (row["provider"] or "").lower() == "cloudflare_temp_mail":
         return build_error_response(
             "POOL_ACCOUNT_DELETE_DENIED",
@@ -1746,12 +1782,22 @@ def api_batch_delete_accounts() -> Any:
 
     deleted_count = 0
     failed_count = 0
+    owner_user_id = get_current_user_id()
 
     for account_id in account_ids:
         try:
             # 获取邮箱地址和 provider 用于审计日志和保护判断
             db = get_db()
-            row = db.execute("SELECT email, provider FROM accounts WHERE id = ?", (account_id,)).fetchone()
+            if owner_user_id:
+                row = db.execute(
+                    "SELECT email, provider FROM accounts WHERE id = ? AND user_id = ?",
+                    (account_id, owner_user_id),
+                ).fetchone()
+            else:
+                row = db.execute("SELECT email, provider FROM accounts WHERE id = ?", (account_id,)).fetchone()
+            if not row:
+                failed_count += 1
+                continue
             email_addr = row["email"] if row else ""
 
             # 邮箱池管理的 CF 临时邮箱不允许手动删除，跳过
@@ -1778,6 +1824,51 @@ def api_batch_delete_accounts() -> Any:
             "message": f"成功删除 {deleted_count} 个账号" + (f"，失败 {failed_count} 个" if failed_count > 0 else ""),
             "deleted_count": deleted_count,
             "failed_count": failed_count,
+        }
+    )
+
+
+@login_required
+def api_delete_all_accounts() -> Any:
+    """删除当前登录用户的全部导入邮箱（跳过邮箱池 CF 临时邮箱）。"""
+    data = request.get_json(silent=True) or {}
+    confirm = str(data.get("confirm") or "").strip().lower()
+    if confirm not in {"delete_all", "yes", "true", "1"}:
+        return build_error_response(
+            "CONFIRM_REQUIRED",
+            "请确认删除：请求体需包含 confirm=delete_all",
+            message_en="Confirmation required: set confirm=delete_all",
+            status=400,
+        )
+
+    group_id = data.get("group_id", None)
+    if group_id is not None:
+        try:
+            group_id = int(group_id)
+        except (TypeError, ValueError):
+            return build_error_response("INVALID_PARAM", "group_id 无效", message_en="Invalid group_id", status=400)
+        if group_id <= 0:
+            group_id = None
+
+    result = accounts_repo.delete_all_accounts_for_current_user(group_id=group_id)
+    deleted_count = int(result.get("deleted_count") or 0)
+    skipped_count = int(result.get("skipped_count") or 0)
+    scope_label = f"分组 {group_id}" if group_id else "全部"
+    log_audit(
+        "delete",
+        "account",
+        "all",
+        f"删除{scope_label}邮箱：成功 {deleted_count}，跳过 {skipped_count}",
+    )
+    return jsonify(
+        {
+            "success": True,
+            "message": (
+                f"已删除 {deleted_count} 个账号"
+                + (f"，跳过 {skipped_count} 个邮箱池账号" if skipped_count else "")
+            ),
+            "deleted_count": deleted_count,
+            "skipped_count": skipped_count,
         }
     )
 

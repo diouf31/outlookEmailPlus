@@ -623,6 +623,25 @@ textarea.form-input {
   text-align: center;
   min-width: 0;
 }
+.account-pagination .page-size-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin-right: 0.15rem;
+  flex-shrink: 0;
+}
+.account-pagination .page-size-select {
+  height: 1.85rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 0.72rem;
+  padding: 0 0.3rem;
+  cursor: pointer;
+}
 
 /* 批量操作栏 */
 .batch-action-bar {
