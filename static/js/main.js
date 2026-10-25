@@ -4547,6 +4547,99 @@ ${details}
             batchFetchSelectedEmails(accounts);
         }
 
+        function showBatchPurgeByKeywordModal() {
+            if (selectedAccountIds.size === 0) {
+                showToast(translateAppTextLocal('请先选择邮箱账号'), 'error');
+                return;
+            }
+            const input = document.getElementById('batchPurgeKeywordInput');
+            if (input) input.value = '';
+            const modal = document.getElementById('batchPurgeKeywordModal');
+            if (modal) modal.classList.add('show');
+            if (input) input.focus();
+        }
+
+        function hideBatchPurgeKeywordModal() {
+            const modal = document.getElementById('batchPurgeKeywordModal');
+            if (modal) modal.classList.remove('show');
+        }
+
+        async function confirmBatchPurgeByKeyword() {
+            const keyword = (document.getElementById('batchPurgeKeywordInput')?.value || '').trim();
+            if (!keyword) {
+                showToast(translateAppTextLocal('请输入关键词'), 'error');
+                return;
+            }
+            if (!confirm(translateAppTextLocal(`确定删除选中邮箱中包含「${keyword}」的邮件吗？此操作不可恢复！`))) {
+                return;
+            }
+            hideBatchPurgeKeywordModal();
+            await batchPurgeSelectedEmails({ mode: 'keyword', keyword });
+        }
+
+        function showBatchPurgeAllEmailsConfirm() {
+            if (selectedAccountIds.size === 0) {
+                showToast(translateAppTextLocal('请先选择邮箱账号'), 'error');
+                return;
+            }
+            const count = selectedAccountIds.size;
+            if (!confirm(translateAppTextLocal(`确定清空选中的 ${count} 个邮箱的收件箱和垃圾箱全部邮件吗？此操作不可恢复！`))) {
+                return;
+            }
+            batchPurgeSelectedEmails({ mode: 'all' });
+        }
+
+        async function batchPurgeSelectedEmails({ mode, keyword = '' }) {
+            const accountIds = Array.from(selectedAccountIds);
+            if (accountIds.length === 0) {
+                showToast(translateAppTextLocal('请先选择邮箱账号'), 'error');
+                return;
+            }
+
+            const toastId = 'batch-purge-toast-' + Date.now();
+            showPersistentToast(
+                toastId,
+                mode === 'keyword'
+                    ? `${translateAppTextLocal('正在按关键词删除邮件')}…`
+                    : `${translateAppTextLocal('正在清空邮件')}…`
+            );
+
+            try {
+                const response = await fetch('/api/emails/purge-batch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        account_ids: accountIds,
+                        mode,
+                        keyword: keyword || undefined,
+                        folders: ['inbox', 'junkemail'],
+                    }),
+                });
+                const data = await response.json();
+                dismissPersistentToast(toastId);
+
+                if (!data.success) {
+                    handleApiError(data, mode === 'keyword' ? '按关键词删除失败' : '清空邮件失败');
+                    return;
+                }
+
+                const summary = data.summary || {};
+                let msg = pickApiMessage(data, data.message, 'Purge completed');
+                if (summary.skipped_imap) {
+                    msg += `（${translateAppTextLocal('已跳过 IMAP')} ${summary.skipped_imap}）`;
+                }
+                showToast(msg, summary.failed_accounts ? 'warning' : 'success');
+
+                // 若当前正在查看的邮箱被清理，刷新邮件列表
+                if (currentAccount) {
+                    try { await loadEmails(currentAccount, true); } catch (_e) {}
+                }
+            } catch (error) {
+                dismissPersistentToast(toastId);
+                showToast(translateAppTextLocal(mode === 'keyword' ? '按关键词删除失败' : '清空邮件失败'), 'error');
+            }
+        }
+
         async function batchFetchSelectedEmails(accounts) {
             const toastId = 'batch-fetch-toast-' + Date.now();
             let processedAccounts = 0;

@@ -407,6 +407,156 @@ def api_delete_emails() -> Any:
 
 
 @login_required
+def api_purge_emails_batch() -> Any:
+    """按关键词或清空方式，批量删除选中账号中的邮件。"""
+    data = request.json or {}
+    raw_ids = data.get("account_ids") or []
+    mode = str(data.get("mode") or "").strip().lower()
+    keyword = str(data.get("keyword") or "").strip()
+    folders_raw = data.get("folders") or ["inbox", "junkemail"]
+
+    if mode not in {"keyword", "all"}:
+        return build_error_response(
+            "INVALID_PARAM",
+            "mode 必须是 keyword 或 all",
+            message_en="mode must be keyword or all",
+        )
+    if mode == "keyword" and not keyword:
+        return build_error_response(
+            "INVALID_PARAM",
+            "按关键词删除时必须提供 keyword",
+            message_en="keyword is required for keyword mode",
+        )
+
+    try:
+        account_ids = [int(x) for x in raw_ids]
+    except Exception:
+        return build_error_response("INVALID_PARAM", "account_ids 无效", message_en="Invalid account_ids")
+    if not account_ids:
+        return build_error_response("INVALID_PARAM", "请选择账号", message_en="No accounts selected")
+
+    allowed_folders = {"inbox", "junkemail", "deleteditems", "trash"}
+    folders: list[str] = []
+    for folder in folders_raw:
+        name = str(folder or "").strip().lower()
+        if name in allowed_folders and name not in folders:
+            folders.append(name)
+    if not folders:
+        folders = ["inbox", "junkemail"]
+
+    results: list[dict[str, Any]] = []
+    deleted_total = 0
+    matched_total = 0
+    skipped_imap = 0
+    failed_accounts = 0
+
+    for account_id in account_ids:
+        account = accounts_repo.get_account_by_id(account_id)
+        if not account:
+            failed_accounts += 1
+            results.append(
+                {
+                    "account_id": account_id,
+                    "success": False,
+                    "error": "账号不存在",
+                }
+            )
+            continue
+
+        email_addr = account.get("email") or ""
+        account_type = (account.get("account_type") or "outlook").strip().lower()
+        if account_type == "imap":
+            skipped_imap += 1
+            results.append(
+                {
+                    "account_id": account_id,
+                    "email": email_addr,
+                    "success": False,
+                    "skipped": True,
+                    "error": "IMAP 邮箱不支持远程删除",
+                }
+            )
+            continue
+
+        proxy_url = ""
+        if account.get("group_id"):
+            group = groups_repo.get_group_by_id(account["group_id"])
+            if group:
+                proxy_url = group.get("proxy_url", "") or ""
+
+        purge_result = email_delete_service.purge_account_emails(
+            email_addr=email_addr,
+            client_id=account["client_id"],
+            refresh_token=account["refresh_token"],
+            folders=folders,
+            keyword=keyword if mode == "keyword" else None,
+            proxy_url=proxy_url,
+            get_emails_fn=graph_service.get_emails_graph,
+            delete_emails_graph=graph_service.delete_emails_graph,
+            delete_emails_imap=imap_service.delete_emails_imap,
+            imap_server_new=IMAP_SERVER_NEW,
+            imap_server_old=IMAP_SERVER_OLD,
+        )
+
+        new_rt = purge_result.get("new_refresh_token")
+        if new_rt:
+            accounts_repo.update_refresh_token_if_changed(account_id, str(new_rt))
+
+        matched = int(purge_result.get("matched_count") or 0)
+        deleted = int(purge_result.get("deleted_count") or 0)
+        matched_total += matched
+        deleted_total += deleted
+        if not purge_result.get("success"):
+            failed_accounts += 1
+
+        results.append(
+            {
+                "account_id": account_id,
+                "email": email_addr,
+                "success": bool(purge_result.get("success")),
+                "matched_count": matched,
+                "deleted_count": deleted,
+                "failed_count": int(purge_result.get("failed_count") or 0),
+                "method": purge_result.get("method"),
+                "error": purge_result.get("error"),
+            }
+        )
+
+        action_label = f"关键词={keyword}" if mode == "keyword" else "清空全部"
+        log_audit(
+            "delete",
+            "email",
+            email_addr,
+            f"批量清理邮件（{action_label}）匹配 {matched} 封，删除 {deleted} 封",
+        )
+
+    summary = {
+        "accounts": len(account_ids),
+        "matched": matched_total,
+        "deleted": deleted_total,
+        "failed_accounts": failed_accounts,
+        "skipped_imap": skipped_imap,
+        "mode": mode,
+        "keyword": keyword if mode == "keyword" else "",
+        "folders": folders,
+    }
+    message = (
+        f"清理完成：匹配 {matched_total} 封，删除 {deleted_total} 封"
+        + (f"，跳过 IMAP {skipped_imap} 个" if skipped_imap else "")
+        + (f"，失败账号 {failed_accounts} 个" if failed_accounts else "")
+    )
+    return jsonify(
+        {
+            "success": True,
+            "message": message,
+            "message_en": f"Purge done: matched {matched_total}, deleted {deleted_total}",
+            "summary": summary,
+            "results": results,
+        }
+    )
+
+
+@login_required
 def api_get_email_detail(email_addr: str, message_id: str) -> Any:
     """获取邮件详情"""
     _t0 = time.monotonic()

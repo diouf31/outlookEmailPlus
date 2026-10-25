@@ -24,6 +24,11 @@ def create_blueprint() -> Blueprint:
         methods=["POST"],
     )
     bp.add_url_rule(
+        "/api/emails/purge-batch",
+        view_func=emails_controller.api_purge_emails_batch,
+        methods=["POST"],
+    )
+    bp.add_url_rule(
         "/api/email/<email_addr>/<path:message_id>",
         view_func=emails_controller.api_get_email_detail,
         methods=["GET"],

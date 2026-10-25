@@ -405,10 +405,13 @@
                     document.getElementById('editAccountId').value = acc.id;
                     document.getElementById('editAccountType').value = acc.account_type || 'outlook';
                     document.getElementById('editEmail').value = acc.email;
-                    document.getElementById('editPassword').value = acc.password || '';
-                    clientIdInput.value = acc.client_id;
+                    const passwordInput = document.getElementById('editPassword');
+                    passwordInput.value = acc.password || '';
+                    passwordInput.dataset.originalValue = acc.password || '';
+                    clientIdInput.value = acc.client_id || '';
                     clientIdInput.dataset.originalValue = acc.client_id || '';
-                    refreshTokenInput.value = acc.refresh_token;
+                    refreshTokenInput.value = acc.refresh_token || '';
+                    refreshTokenInput.dataset.originalValue = acc.refresh_token || '';
                     document.getElementById('editGroupSelect').value = acc.group_id || 1;
                     document.getElementById('editRemark').value = acc.remark || '';
                     document.getElementById('editStatus').value = acc.status || 'active';
@@ -422,13 +425,13 @@
                         clientIdGroup.style.display = 'none';
                         refreshTokenGroup.style.display = 'none';
                         passwordLabel.textContent = translateAppTextLocal('授权码 / 应用密码');
-                        document.getElementById('editPassword').placeholder = translateAppTextLocal('留空则不修改');
+                        passwordInput.placeholder = translateAppTextLocal('留空则不修改');
                         refreshTokenInput.placeholder = '';
                     } else {
                         clientIdGroup.style.display = '';
                         refreshTokenGroup.style.display = '';
                         passwordLabel.textContent = translateAppTextLocal('密码');
-                        document.getElementById('editPassword').placeholder = translateAppTextLocal('可选，留空则不修改');
+                        passwordInput.placeholder = translateAppTextLocal('可选，留空则不修改');
                         refreshTokenInput.placeholder = translateAppTextLocal('留空则不修改');
                     }
 
@@ -498,17 +501,24 @@
             const isImap = accountType === 'imap';
             const oldGroupId = currentGroupId;
             const newGroupId = parseInt(document.getElementById('editGroupSelect').value);
+            const passwordInput = document.getElementById('editPassword');
             const clientIdInput = document.getElementById('editClientId');
             const refreshTokenInput = document.getElementById('editRefreshToken');
+            const password = passwordInput.value;
             const clientId = clientIdInput.value.trim();
             const refreshToken = refreshTokenInput.value.trim();
+            const originalPassword = passwordInput.dataset.originalValue || '';
             const originalClientId = (clientIdInput.dataset.originalValue || '').trim();
+            const originalRefreshToken = (refreshTokenInput.dataset.originalValue || '').trim();
+            const passwordChanged = password !== originalPassword;
             const hasClientIdChanged = !isImap && clientId !== originalClientId;
-            const wantsToUpdateOutlookCredentials = !isImap && (hasClientIdChanged || !!refreshToken);
+            const refreshTokenChanged = !isImap && refreshToken !== originalRefreshToken;
+            const wantsToUpdateOutlookCredentials = !isImap && (hasClientIdChanged || refreshTokenChanged);
 
             const data = {
                 email: document.getElementById('editEmail').value.trim(),
-                password: document.getElementById('editPassword').value,
+                // 未改动时传空，后端保留原值；改动后传新值
+                password: passwordChanged ? password : '',
                 client_id: wantsToUpdateOutlookCredentials ? clientId : '',
                 refresh_token: wantsToUpdateOutlookCredentials ? refreshToken : '',
                 group_id: newGroupId,

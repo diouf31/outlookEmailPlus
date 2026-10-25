@@ -17,7 +17,7 @@ class MaskingAuditAndImportTests(unittest.TestCase):
             clear_login_attempts()
 
     def _login(self, client):
-        resp = client.post("/login", json={"password": "testpass123"})
+        resp = client.post("/login", json={"username": "admin", "password": "testpass123"})
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.get_json().get("success"), True)
 
@@ -45,34 +45,38 @@ class MaskingAuditAndImportTests(unittest.TestCase):
         self.assertIn("login_password_set", settings)
         self.assertIn("temp_mail_api_key_set", settings)
 
-    def test_account_get_does_not_return_password_or_refresh_token(self):
+    def test_account_get_returns_password_and_refresh_token_for_edit(self):
         unique = uuid.uuid4().hex
         email_addr = f"mask_{unique}@example.com"
         password = f"pass_{unique}"
         refresh_token = f"rt_{unique}"
         client_id = f"cid_{unique}"
 
-        conn = self.module.create_sqlite_connection()
-        try:
-            cur = conn.execute(
+        with self.app.app_context():
+            from outlook_web.db import get_db
+            from outlook_web.security.crypto import encrypt_data
+
+            db = get_db()
+            cur = db.execute(
                 """
-                INSERT INTO accounts (email, password, client_id, refresh_token, group_id, remark, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO accounts (
+                    email, password, client_id, refresh_token,
+                    group_id, remark, status, user_id
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, 1)
                 """,
                 (
                     email_addr,
-                    password,
+                    encrypt_data(password),
                     client_id,
-                    refresh_token,
+                    encrypt_data(refresh_token),
                     self._default_group_id(),
                     "",
                     "active",
                 ),
             )
             account_id = cur.lastrowid
-            conn.commit()
-        finally:
-            conn.close()
+            db.commit()
 
         client = self.app.test_client()
         self._login(client)
@@ -84,14 +88,10 @@ class MaskingAuditAndImportTests(unittest.TestCase):
         account = data.get("account") or {}
         self.assertEqual(account.get("id"), account_id)
         self.assertEqual(account.get("email"), email_addr)
-        self.assertEqual(account.get("password"), "")
-        self.assertEqual(account.get("refresh_token"), "")
+        self.assertEqual(account.get("password"), password)
+        self.assertEqual(account.get("refresh_token"), refresh_token)
         self.assertEqual(account.get("has_password"), True)
         self.assertEqual(account.get("has_refresh_token"), True)
-
-        body_text = resp.get_data(as_text=True)
-        self.assertNotIn(password, body_text)
-        self.assertNotIn(refresh_token, body_text)
 
     def test_system_group_cannot_be_renamed(self):
         client = self.app.test_client()

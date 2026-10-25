@@ -259,7 +259,8 @@ class AccountEditBrowserFlowTests(unittest.TestCase):
 
             page.locator("#editAccountModal.show").wait_for(timeout=10000)
             self.assertEqual(page.input_value("#editClientId"), account["client_id"])
-            self.assertEqual(page.locator("#editRefreshToken").input_value(), "")
+            self.assertEqual(page.locator("#editRefreshToken").input_value(), account["refresh_token"])
+            self.assertEqual(page.input_value("#editPassword"), account["password"])
 
             page.fill("#editRemark", new_remark)
 

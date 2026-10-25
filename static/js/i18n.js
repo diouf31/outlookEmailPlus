@@ -996,7 +996,18 @@
         '请选择要批量拉取邮件的账号': 'Please select accounts to batch fetch emails',
         '正在批量拉取邮件': 'Batch fetching emails',
         '批量拉取完成': 'Batch fetch completed',
-        '收件箱 + 垃圾箱': 'Inbox + Junk'
+        '收件箱 + 垃圾箱': 'Inbox + Junk',
+        '请先选择邮箱账号': 'Please select mailbox accounts first',
+        '请输入关键词': 'Please enter a keyword',
+        '正在按关键词删除邮件': 'Deleting emails by keyword',
+        '正在清空邮件': 'Clearing emails',
+        '按关键词删除失败': 'Failed to delete emails by keyword',
+        '清空邮件失败': 'Failed to clear emails',
+        '已跳过 IMAP': 'Skipped IMAP',
+        '按关键词删邮件': 'Delete by Keyword',
+        '清空邮件': 'Clear Emails',
+        '按关键词删除邮件': 'Delete Emails by Keyword',
+        '删除匹配邮件': 'Delete Matching Emails'
     };
 
     // 含内联 HTML（<code>、<strong> 等）的整段翻译块
@@ -1059,6 +1070,8 @@
         { zh: /^确定要永久删除选中的 (\d+) 封邮件吗？此操作不可恢复！$/, en: 'Permanently delete $1 selected emails? This action cannot be undone.' },
         { zh: /^确定要永久删除这封邮件吗？此操作不可恢复！$/, en: 'Permanently delete this email? This action cannot be undone.' },
         { zh: /^确定要删除选中的 (\d+) 个账号吗？此操作不可恢复！$/, en: 'Delete $1 selected accounts? This action cannot be undone.' },
+        { zh: /^确定删除选中邮箱中包含「(.+)」的邮件吗？此操作不可恢复！$/, en: 'Delete emails containing "$1" in selected mailboxes? This cannot be undone!' },
+        { zh: /^确定清空选中的 (\d+) 个邮箱的收件箱和垃圾箱全部邮件吗？此操作不可恢复！$/, en: 'Clear all inbox and junk emails in $1 selected mailboxes? This cannot be undone!' },
         { zh: /^📬 (.+): (.+) 等 (\d+) 封新邮件$/, en: '📬 $1: $2 and $3 new emails' },
         { zh: /^📬 (.+): (.+)$/, en: '📬 $1: $2' },
         { zh: /^Telegram推送(已开启)?$/, en: 'Telegram Notifications$1' },

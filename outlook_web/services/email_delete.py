@@ -118,3 +118,155 @@ def delete_emails_with_fallback(
         }
     )
     return response_data, None
+
+
+def _email_matches_keyword(email_item: Dict[str, Any], keyword_lower: str) -> bool:
+    subject = str(email_item.get("subject") or "")
+    preview = str(email_item.get("bodyPreview") or "")
+    return keyword_lower in subject.lower() or keyword_lower in preview.lower()
+
+
+def collect_message_ids_for_purge(
+    *,
+    get_emails_fn: Callable[..., Dict[str, Any]],
+    client_id: str,
+    refresh_token: str,
+    folders: List[str],
+    keyword: Optional[str] = None,
+    proxy_url: str = "",
+    page_size: int = 50,
+    max_messages: int = 2000,
+) -> Tuple[List[str], Optional[Dict[str, Any]], Optional[str]]:
+    """分页收集待删除邮件 ID。keyword 为空表示清空；匹配主题或正文预览（不区分大小写）。"""
+    keyword_lower = (keyword or "").strip().lower()
+    collected: List[str] = []
+    seen: set[str] = set()
+    latest_refresh_token: Optional[str] = None
+
+    for folder in folders:
+        skip = 0
+        while len(collected) < max_messages:
+            result = get_emails_fn(
+                client_id,
+                refresh_token,
+                folder=folder,
+                skip=skip,
+                top=page_size,
+                proxy_url=proxy_url or None,
+            )
+            if not result.get("success"):
+                return collected, result.get("error") or {"message": "获取邮件失败"}, latest_refresh_token
+
+            new_rt = result.get("new_refresh_token")
+            if new_rt:
+                latest_refresh_token = str(new_rt)
+                refresh_token = latest_refresh_token
+
+            emails = result.get("emails") or []
+            if not emails:
+                break
+
+            for item in emails:
+                msg_id = str(item.get("id") or "").strip()
+                if not msg_id or msg_id in seen:
+                    continue
+                if keyword_lower and not _email_matches_keyword(item, keyword_lower):
+                    continue
+                seen.add(msg_id)
+                collected.append(msg_id)
+                if len(collected) >= max_messages:
+                    break
+
+            if len(emails) < page_size:
+                break
+            skip += page_size
+
+    return collected, None, latest_refresh_token
+
+
+def purge_account_emails(
+    *,
+    email_addr: str,
+    client_id: str,
+    refresh_token: str,
+    folders: List[str],
+    keyword: Optional[str],
+    proxy_url: str,
+    get_emails_fn: Callable[..., Dict[str, Any]],
+    delete_emails_graph: Callable[[str, str, List[str], Optional[str]], Dict[str, Any]],
+    delete_emails_imap: Callable[[str, str, str, List[str], str], Dict[str, Any]],
+    imap_server_new: str,
+    imap_server_old: str,
+    max_messages: int = 2000,
+) -> Dict[str, Any]:
+    """对单个账号按关键词或清空方式删除邮件，返回汇总结果。"""
+    message_ids, list_error, new_refresh_token = collect_message_ids_for_purge(
+        get_emails_fn=get_emails_fn,
+        client_id=client_id,
+        refresh_token=refresh_token,
+        folders=folders,
+        keyword=keyword,
+        proxy_url=proxy_url,
+        max_messages=max_messages,
+    )
+    if list_error and not message_ids:
+        return {
+            "success": False,
+            "email": email_addr,
+            "matched_count": 0,
+            "deleted_count": 0,
+            "failed_count": 0,
+            "error": list_error,
+            "new_refresh_token": new_refresh_token,
+        }
+
+    if not message_ids:
+        return {
+            "success": True,
+            "email": email_addr,
+            "matched_count": 0,
+            "deleted_count": 0,
+            "failed_count": 0,
+            "message": "没有匹配的邮件",
+            "new_refresh_token": new_refresh_token,
+        }
+
+    active_refresh_token = new_refresh_token or refresh_token
+    deleted_count = 0
+    failed_count = 0
+    method_used: Optional[str] = None
+    last_error: Any = None
+    chunk_size = 50
+
+    for i in range(0, len(message_ids), chunk_size):
+        chunk = message_ids[i : i + chunk_size]
+        response_data, method = delete_emails_with_fallback(
+            email_addr=email_addr,
+            client_id=client_id,
+            refresh_token=active_refresh_token,
+            message_ids=chunk,
+            proxy_url=proxy_url,
+            delete_emails_graph=delete_emails_graph,
+            delete_emails_imap=delete_emails_imap,
+            imap_server_new=imap_server_new,
+            imap_server_old=imap_server_old,
+        )
+        if method:
+            method_used = method
+        deleted_count += int(response_data.get("success_count") or 0)
+        failed_count += int(response_data.get("failed_count") or 0)
+        if not response_data.get("success"):
+            last_error = response_data.get("error") or last_error
+
+    return {
+        "success": deleted_count > 0 or failed_count == 0,
+        "email": email_addr,
+        "matched_count": len(message_ids),
+        "deleted_count": deleted_count,
+        "failed_count": failed_count,
+        "method": method_used,
+        "error": last_error,
+        "new_refresh_token": new_refresh_token,
+        "truncated": list_error is not None,
+        "list_error": list_error,
+    }
