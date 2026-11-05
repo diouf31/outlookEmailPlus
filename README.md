@@ -401,10 +401,10 @@ ALLOW_LOGIN_PASSWORD_CHANGE=false
 
 ## 项目文档
 
-- [注册与邮箱池接口文档](./注册与邮箱池接口文档.md)
-- [Registration Worker and Mail Pool API](./registration-mail-pool-api.en.md)
-- [临时邮箱 Provider 插件接入说明](./临时邮箱Provider插件接入说明.md)
-- [临时邮箱 Provider 插件接入提示词](./临时邮箱Provider插件接入提示词.md)
+- [注册与邮箱池接口文档](./docs/API/注册与邮箱池接口文档.md)
+- [Registration Worker and Mail Pool API](./docs/API/registration-mail-pool-api.en.md)
+- [临时邮箱 Provider 插件接入说明](./docs/plugins/临时邮箱Provider插件接入说明.md)
+- [临时邮箱 Provider 插件接入提示词](./docs/plugins/临时邮箱Provider插件接入提示词.md)
 
 如果你要对接注册机或批量工作流，优先看邮箱池和外部接口文档。
 

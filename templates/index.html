@@ -1135,12 +1135,12 @@
     <!-- Toast container -->
     <div id="toast-container" aria-live="polite"></div>
 
-    <!-- Modal: 重置用户密码 -->
-    <div id="modalResetPassword" class="modal-overlay" style="display:none;" onclick="if(event.target===this)closeResetPasswordModal()">
-        <div class="modal" style="max-width:420px;">
+    <!-- Modal: 重置用户密码（与项目其他模态框一致：.modal + .show / .modal-content） -->
+    <div class="modal" id="modalResetPassword" onclick="if(event.target===this)closeResetPasswordModal()">
+        <div class="modal-content" style="max-width:420px;">
             <div class="modal-header">
-                <div class="modal-title">🔑 重置密码</div>
-                <button class="modal-close" onclick="closeResetPasswordModal()">✕</button>
+                <h3>🔑 重置密码</h3>
+                <button class="modal-close" onclick="closeResetPasswordModal()">&times;</button>
             </div>
             <div class="modal-body">
                 <p style="margin:0 0 1rem;color:var(--text-muted);font-size:0.9rem;">为用户 <strong id="resetPwdUsername"></strong> 设置新密码</p>
@@ -1151,7 +1151,7 @@
                 </div>
             </div>
             <div class="modal-footer">
-                <button class="btn btn-outline" onclick="closeResetPasswordModal()">取消</button>
+                <button class="btn btn-secondary" onclick="closeResetPasswordModal()">取消</button>
                 <button class="btn btn-primary" id="btnSubmitResetPwd" onclick="submitResetPassword()">确认重置</button>
             </div>
         </div>

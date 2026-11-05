@@ -67,6 +67,10 @@ Thumbs.db
 .ace-tool/
 .claude/
 
+# 归档目录中的本地敏感备注（勿入库）
+archive/local-notes/
+测试数据.txt
+
 # Cloudflare 部署（含 node_modules 和敏感配置，不入库）
 cf-deploy/
 .wrangler/

@@ -43,7 +43,7 @@ Tag 统一带 `v` 前缀：`v1.11.0`。
 
 2. **CI 全绿**
    - `Code Quality`、`Python Tests`、`Build and Push Docker Image` 等工作流通过
-   - 注意：`Code Quality` / `Python Tests` / `Build and Push Docker Image` 都带 `paths` 过滤，纯文档或 `WORKSPACE.md` 提交不会自动重跑；发版时必须检查“版本提交 / tag 对应的那次运行”，不能拿后续 docs-only push 的结果替代
+   - 注意：`Code Quality` / `Python Tests` / `Build and Push Docker Image` 都带 `paths` 过滤，纯文档或 `archive/WORKSPACE.md` 提交不会自动重跑；发版时必须检查“版本提交 / tag 对应的那次运行”，不能拿后续 docs-only push 的结果替代
 
 3. **变更记录准备完成**
    - `CHANGELOG.md` 已补齐本次版本的变更

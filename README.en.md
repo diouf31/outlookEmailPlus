@@ -390,8 +390,8 @@ ALLOW_LOGIN_PASSWORD_CHANGE=false
 
 ## Project Documentation
 
-- [中文注册与邮箱池接口文档](./注册与邮箱池接口文档.md)
-- [Registration Worker and Mail Pool API](./registration-mail-pool-api.en.md)
+- [中文注册与邮箱池接口文档](./docs/API/注册与邮箱池接口文档.md)
+- [Registration Worker and Mail Pool API](./docs/API/registration-mail-pool-api.en.md)
 
 If you plan to integrate registration workers or batch workflows, start with the mail-pool and external API docs.
 

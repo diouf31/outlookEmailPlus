@@ -1,4 +1,4 @@
-name: Code Quality
+﻿name: Code Quality
 
 on:
   push:
@@ -36,13 +36,13 @@ jobs:
           pip install flake8 black isort mypy
 
       - name: Run Black (Code Formatter Check)
-        run: black --check --diff outlook_web tests web_outlook_app.py outlook_mail_reader.py start.py
+        run: black --check --diff outlook_web tests web_outlook_app.py scripts/outlook_mail_reader.py start.py
 
       - name: Run isort (Import Sorting Check)
-        run: isort --check-only --diff --profile black outlook_web tests web_outlook_app.py outlook_mail_reader.py start.py
+        run: isort --check-only --diff --profile black outlook_web tests web_outlook_app.py scripts/outlook_mail_reader.py start.py
 
       - name: Run Flake8 (Linting)
-        run: flake8 outlook_web tests web_outlook_app.py outlook_mail_reader.py start.py --count --select=E9,F63,F7,F82 --show-source --statistics
+        run: flake8 outlook_web tests web_outlook_app.py scripts/outlook_mail_reader.py start.py --count --select=E9,F63,F7,F82 --show-source --statistics
 
       - name: Run Flake8 (Complexity Check)
         run: >
@@ -91,9 +91,9 @@ jobs:
         shell: bash
         run: |
           set +e
-          bandit -r outlook_web web_outlook_app.py outlook_mail_reader.py start.py -f sarif -o bandit-report.sarif
+          bandit -r outlook_web web_outlook_app.py scripts/outlook_mail_reader.py start.py -f sarif -o bandit-report.sarif
           report_status=$?
-          bandit -r outlook_web web_outlook_app.py outlook_mail_reader.py start.py -lll
+          bandit -r outlook_web web_outlook_app.py scripts/outlook_mail_reader.py start.py -lll
           gate_status=$?
           echo "bandit_report_exit_code=$report_status" >> "$GITHUB_ENV"
           echo "bandit_gate_exit_code=$gate_status" >> "$GITHUB_ENV"

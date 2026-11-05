@@ -22,7 +22,7 @@
 
 ## 在开始前必须先阅读
 
-1. `临时邮箱Provider插件接入说明.md`
+1. `docs/plugins/临时邮箱Provider插件接入说明.md`
 2. `docs/TD/2026-04-21-临时邮箱插件化TD.md`
 3. `docs/TDD/2026-04-21-临时邮箱插件化TDD.md`
 4. `docs/FD/2026-04-21-临时邮箱插件化FD.md`
@@ -206,6 +206,6 @@ plugin.[provider_name].[field_key]
 
 ## 搭配阅读
 
-- `临时邮箱Provider插件接入说明.md`
+- `docs/plugins/临时邮箱Provider插件接入说明.md`
 - `docs/TD/2026-04-21-临时邮箱插件化TD.md`
 - `docs/TDD/2026-04-21-临时邮箱插件化TDD.md`

@@ -188,14 +188,26 @@ async function toggleUserRole(userId, currentRole, username) {
 // ── 重置密码 Modal ─────────────────────────────────────────────────────────────
 
 function showResetPasswordModal(userId, username) {
+    const modal = document.getElementById('modalResetPassword');
+    if (!modal) {
+        showToast('重置密码弹窗未找到', 'error');
+        return;
+    }
     document.getElementById('resetPwdUserId').value = userId;
     document.getElementById('resetPwdUsername').textContent = username;
     document.getElementById('resetPwdNewPassword').value = '';
-    document.getElementById('modalResetPassword').style.display = 'flex';
+    modal.classList.add('show');
+    const input = document.getElementById('resetPwdNewPassword');
+    if (input) {
+        setTimeout(() => input.focus(), 50);
+    }
 }
 
 function closeResetPasswordModal() {
-    document.getElementById('modalResetPassword').style.display = 'none';
+    const modal = document.getElementById('modalResetPassword');
+    if (modal) {
+        modal.classList.remove('show');
+    }
 }
 
 async function submitResetPassword() {

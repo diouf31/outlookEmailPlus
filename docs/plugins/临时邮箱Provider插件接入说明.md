@@ -358,4 +358,4 @@ POST /api/system/reload-plugins
 - `docs/TD/2026-04-21-临时邮箱插件化TD.md`
 - `docs/TDD/2026-04-21-临时邮箱插件化TDD.md`
 - `docs/TODO/2026-04-21-临时邮箱插件化TODO.md`
-- `临时邮箱Provider插件接入提示词.md`
+- `docs/plugins/临时邮箱Provider插件接入提示词.md`

@@ -1,4 +1,4 @@
-name: Build and Push Docker Image
+﻿name: Build and Push Docker Image
 
 on:
   push:
@@ -43,17 +43,17 @@ jobs:
 
       - name: Run formatter checks
         run: |
-          black --check outlook_web tests web_outlook_app.py outlook_mail_reader.py start.py
-          isort --check-only --profile black outlook_web tests web_outlook_app.py outlook_mail_reader.py start.py
+          black --check outlook_web tests web_outlook_app.py scripts/outlook_mail_reader.py start.py
+          isort --check-only --profile black outlook_web tests web_outlook_app.py scripts/outlook_mail_reader.py start.py
 
       - name: Run static analysis gate
         run: |
-          flake8 outlook_web tests web_outlook_app.py outlook_mail_reader.py start.py --count --select=E9,F63,F7,F82 --show-source --statistics
+          flake8 outlook_web tests web_outlook_app.py scripts/outlook_mail_reader.py start.py --count --select=E9,F63,F7,F82 --show-source --statistics
           flake8 outlook_web/repositories/settings.py outlook_web/services/external_api.py outlook_web/controllers/system.py web_outlook_app.py --count --max-complexity=10 --max-line-length=127 --statistics
           mypy --config-file pyproject.toml outlook_web/repositories/settings.py outlook_web/services/external_api.py outlook_web/controllers/system.py web_outlook_app.py
 
       - name: Run security gate
-        run: bandit -r outlook_web web_outlook_app.py outlook_mail_reader.py start.py -lll
+        run: bandit -r outlook_web web_outlook_app.py scripts/outlook_mail_reader.py start.py -lll
 
       - name: Run publish gate tests
         run: python -m unittest discover -s tests -v
