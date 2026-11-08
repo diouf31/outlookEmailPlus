@@ -648,6 +648,66 @@
             }
         }
 
+        function rewriteEmailLinksForExternalOpen(html) {
+            const sourceHtml = typeof html === 'string' ? html : '';
+            if (!sourceHtml || typeof DOMParser === 'undefined') {
+                return sourceHtml;
+            }
+            try {
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(sourceHtml, 'text/html');
+                doc.querySelectorAll('a[href]').forEach((anchor) => {
+                    const href = (anchor.getAttribute('href') || '').trim();
+                    if (!href || href.startsWith('#') || /^javascript:/i.test(href)) {
+                        return;
+                    }
+                    anchor.setAttribute('target', '_blank');
+                    anchor.setAttribute('rel', 'noopener noreferrer');
+                });
+                return doc.body ? doc.body.innerHTML : sourceHtml;
+            } catch (error) {
+                console.warn('重写邮件链接失败:', error);
+                return sourceHtml;
+            }
+        }
+
+        function isExternalEmailNavigationHref(href) {
+            const value = String(href || '').trim();
+            if (!value || value.startsWith('#')) {
+                return false;
+            }
+            const lower = value.toLowerCase();
+            if (lower.startsWith('javascript:') || lower.startsWith('data:') || lower.startsWith('mailto:') || lower.startsWith('tel:')) {
+                return false;
+            }
+            return true;
+        }
+
+        function bindEmailLinksOpenInBrowser(iframe) {
+            try {
+                const doc = iframe && iframe.contentDocument;
+                if (!doc || doc.documentElement.dataset.emailLinkBind === '1') {
+                    return;
+                }
+                doc.documentElement.dataset.emailLinkBind = '1';
+                doc.addEventListener('click', (event) => {
+                    const anchor = event.target && event.target.closest ? event.target.closest('a[href]') : null;
+                    if (!anchor) {
+                        return;
+                    }
+                    const href = anchor.href || anchor.getAttribute('href') || '';
+                    if (!isExternalEmailNavigationHref(href)) {
+                        return;
+                    }
+                    event.preventDefault();
+                    event.stopPropagation();
+                    window.open(href, '_blank', 'noopener,noreferrer');
+                }, true);
+            } catch (error) {
+                console.warn('绑定邮件外链打开失败:', error);
+            }
+        }
+
         function renderEmailDetail(email, options = {}) {
             const refs = getEmailDetailRefs(options);
             const container = refs.container;
@@ -661,7 +721,7 @@
                 (rawBody && (rawBody.includes('<html') || rawBody.includes('<div') || rawBody.includes('<p>')));
 
             const bodyContent = isHtml
-                ? `<iframe id="${iframeId}" class="email-body-frame" sandbox="allow-same-origin" onload="adjustIframeHeight(this)"></iframe>`
+                ? `<iframe id="${iframeId}" class="email-body-frame" sandbox="allow-same-origin allow-popups" onload="adjustIframeHeight(this); bindEmailLinksOpenInBrowser(this)"></iframe>`
                 : `<div class="email-body-text">${escapeHtml(rawBody)}</div>`;
 
             container.innerHTML = `
@@ -697,7 +757,9 @@
             if (isHtml) {
                 const iframe = container.querySelector(`#${iframeId}`) || container.querySelector('.email-body-frame');
                 if (iframe) {
-                    const renderableBody = rewriteEmailInlineImages(rawBody, email);
+                    const renderableBody = rewriteEmailLinksForExternalOpen(
+                        rewriteEmailInlineImages(rawBody, email)
+                    );
                     let sanitizedBody;
                     if (isTrustedMode) {
                         sanitizedBody = renderableBody; // 信任模式：不过滤
@@ -705,7 +767,7 @@
                         // 使用 DOMPurify 净化 HTML 内容，防止 XSS 攻击
                         sanitizedBody = DOMPurify.sanitize(renderableBody, {
                             ALLOWED_TAGS: ['a', 'b', 'i', 'u', 'strong', 'em', 'p', 'br', 'div', 'span', 'img', 'table', 'tr', 'td', 'th', 'thead', 'tbody', 'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'pre', 'code'],
-                            ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'style', 'class', 'width', 'height', 'align', 'border', 'cellpadding', 'cellspacing'],
+                            ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'style', 'class', 'width', 'height', 'align', 'border', 'cellpadding', 'cellspacing', 'target', 'rel'],
                             ALLOW_DATA_ATTR: false,
                             ADD_DATA_URI_TAGS: ['img'],
                             ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|tel|cid):|data:image\/(?:png|gif|jpe?g|webp|bmp|x-icon|vnd\.microsoft\.icon|avif);base64,|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
@@ -727,6 +789,7 @@
                         <html>
                         <head>
                             <meta charset="UTF-8">
+                            <base target="_blank">
                             <style>
                                 body {
                                     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
@@ -745,6 +808,7 @@
                         </html>
                     `;
                     iframe.srcdoc = htmlContent;
+                    iframe.addEventListener('load', () => bindEmailLinksOpenInBrowser(iframe), { once: true });
                 }
             }
         }
@@ -879,6 +943,7 @@
                     // 如果是 HTML 邮件，创建新的 iframe
                     const newIframe = document.createElement('iframe');
                     newIframe.id = 'fullscreenEmailBodyFrame';
+                    newIframe.setAttribute('sandbox', 'allow-same-origin allow-popups');
                     newIframe.style.width = '100%';
                     newIframe.style.border = 'none';
                     newIframe.style.backgroundColor = '#ffffff';
@@ -891,9 +956,10 @@
 
                     content.appendChild(newIframe);
 
-                    // 调整 iframe 高度
+                    // 调整 iframe 高度，并同样外链新开页
                     newIframe.onload = function () {
                         adjustFullscreenIframeHeight(newIframe);
+                        bindEmailLinksOpenInBrowser(newIframe);
                     };
                 } else if (textContent) {
                     // 如果是纯文本邮件，直接克隆

@@ -21,6 +21,9 @@ window.__emailInlineImageTestApi = {
   normalizeEmailInlineResourceKey,
   resolveEmailInlineResource,
   rewriteEmailInlineImages,
+  rewriteEmailLinksForExternalOpen,
+  isExternalEmailNavigationHref,
+  bindEmailLinksOpenInBrowser,
   renderEmailDetail
 };`);
     emailApi = window.__emailInlineImageTestApi;
@@ -103,5 +106,61 @@ window.__emailInlineImageTestApi = {
     expect(iframe).not.toBeNull();
     expect(iframe.srcdoc).toContain('data:image/png;base64,QUJDRA==');
     expect(iframe.srcdoc).not.toContain('cid:captcha-2');
+  });
+
+  test('rewriteEmailLinksForExternalOpen forces http(s) links to open externally', () => {
+    const html = [
+      '<div>',
+      '<a href="https://click.salesforce.com/confirm">Confirm Email Address</a>',
+      '<a href="#section">anchor</a>',
+      '<a href="javascript:void(0)">noop</a>',
+      '</div>'
+    ].join('');
+
+    const result = emailApi.rewriteEmailLinksForExternalOpen(html);
+
+    expect(result).toContain('href="https://click.salesforce.com/confirm"');
+    expect(result).toContain('target="_blank"');
+    expect(result).toContain('rel="noopener noreferrer"');
+    expect(result).toContain('href="#section"');
+    expect(result).not.toMatch(/href="#section"[^>]*target="_blank"/);
+  });
+
+  test('renderEmailDetail srcdoc includes base target blank and popup sandbox', () => {
+    emailApi.renderEmailDetail({
+      subject: 'Pirelli Survey - Complete Registration',
+      from: 'noreply@pirelli.com',
+      to: 'user@outlook.com',
+      date: '2026-11-08T14:43:00',
+      body_type: 'html',
+      body: '<a href="https://click.salesforce.com/confirm">Confirm Email Address</a>'
+    });
+
+    const iframe = document.getElementById('emailBodyFrame');
+    expect(iframe).not.toBeNull();
+    expect(iframe.getAttribute('sandbox')).toContain('allow-popups');
+    expect(iframe.srcdoc).toContain('<base target="_blank">');
+    expect(iframe.srcdoc).toContain('https://click.salesforce.com/confirm');
+    expect(iframe.srcdoc).toContain('target="_blank"');
+  });
+
+  test('bindEmailLinksOpenInBrowser opens http links via window.open', () => {
+    const iframe = document.createElement('iframe');
+    document.body.appendChild(iframe);
+    iframe.contentDocument.open();
+    iframe.contentDocument.write('<a id="cta" href="https://click.salesforce.com/confirm">Confirm</a>');
+    iframe.contentDocument.close();
+
+    const openSpy = jest.spyOn(window, 'open').mockImplementation(() => null);
+    emailApi.bindEmailLinksOpenInBrowser(iframe);
+
+    const anchor = iframe.contentDocument.getElementById('cta');
+    const event = iframe.contentDocument.createEvent('MouseEvents');
+    event.initEvent('click', true, true);
+    anchor.dispatchEvent(event);
+
+    expect(openSpy).toHaveBeenCalled();
+    expect(String(openSpy.mock.calls[0][0])).toContain('https://click.salesforce.com/confirm');
+    openSpy.mockRestore();
   });
 });
