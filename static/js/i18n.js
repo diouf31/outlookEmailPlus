@@ -429,6 +429,7 @@
         '范围：0-100 次，设置为 0 表示持续轮询': 'Range: 0-100, set to 0 for continuous polling',
         '范围：10-86400 秒，默认 600 秒（10 分钟）': 'Range: 10-86400 seconds, default 600 seconds (10 minutes)',
         '开启后自动检查当前账号是否有新邮件': 'When enabled, automatically check whether the current account has new emails',
+        '仅对当前登录用户生效。开启后，复制邮箱或选中邮箱时自动检查是否有新邮件；其他子账号不受影响。': 'Applies only to the current login user. When enabled, copying or selecting a mailbox will auto-check for new mail; other users are not affected.',
         '全局生效，覆盖普通邮箱和临时邮箱；仅从启用后新到达的邮件开始通知。': 'Applies globally to regular and temp mailboxes. Only newly arrived emails after enabling will trigger notifications.',
         '只需填写接收邮箱，不暴露复杂邮件网关配置。关闭通知后可保留该邮箱。': 'Only the recipient email is required. The address can be retained after notifications are disabled.',
         '按“先保存，再测试”处理；成功语义为“请求已提交，请检查收件箱”。': 'Follow the save-then-test flow. Success means the request was accepted. Please check your inbox.',

@@ -187,6 +187,7 @@ def _ensure_email_service_available() -> None:
 def api_get_settings() -> Any:
     """获取所有设置"""
     all_settings = settings_repo.get_all_settings()
+    user_polling = settings_repo.get_user_polling_settings(get_current_user_id())
 
     # 仅返回前端需要的设置项（避免把敏感字段/内部状态直接返回）
     safe_settings = {
@@ -195,10 +196,10 @@ def api_get_settings() -> Any:
         "refresh_cron": all_settings.get("refresh_cron", "0 2 * * *"),
         "use_cron_schedule": all_settings.get("use_cron_schedule", "false"),
         "enable_scheduled_refresh": all_settings.get("enable_scheduled_refresh", "true"),
-        # 轮询配置
-        "enable_auto_polling": all_settings.get("enable_auto_polling", "false") == "true",
-        "polling_interval": int(all_settings.get("polling_interval", "10")),
-        "polling_count": int(all_settings.get("polling_count", "5")),
+        # 轮询配置（按当前登录用户隔离）
+        "enable_auto_polling": user_polling.get("enable_auto_polling", "false") == "true",
+        "polling_interval": int(user_polling.get("polling_interval", "10")),
+        "polling_count": int(user_polling.get("polling_count", "5")),
         # [Phase 3 deprecated] 简洁模式自动轮询配置 — 保留读取，向后兼容
         "enable_compact_auto_poll": all_settings.get("enable_compact_auto_poll", "false") == "true",
         "compact_poll_interval": int(all_settings.get("compact_poll_interval", "10")),
@@ -373,6 +374,18 @@ def api_update_settings() -> Any:
 
     def queue_setting_update(key: str, value: str) -> None:
         pending_operations.append(lambda key=key, value=value: settings_repo.set_setting(key, value, commit=False))
+
+    def queue_user_polling_update(key: str, value: str) -> bool:
+        uid = get_current_user_id()
+        if not uid:
+            errors.append("无法识别当前用户，轮询设置未保存")
+            return False
+        pending_operations.append(
+            lambda key=key, value=value, uid=uid: settings_repo.set_user_polling_setting(
+                uid, key, value, commit=False
+            )
+        )
+        return True
 
     def queue_operation(op: Any) -> None:
         pending_operations.append(op)
@@ -938,12 +951,12 @@ def api_update_settings() -> Any:
         else:
             errors.append("定时刷新开关必须是 true 或 false")
 
-    # 更新轮询配置
+    # 更新轮询配置（按当前登录用户隔离，不影响其他子账号）
     if "enable_auto_polling" in data:
         enable_polling = str(data["enable_auto_polling"]).lower()
         if enable_polling in ("true", "false"):
-            queue_setting_update("enable_auto_polling", enable_polling)
-            updated.append("自动轮询开关")
+            if queue_user_polling_update("enable_auto_polling", enable_polling):
+                updated.append("自动轮询开关")
         else:
             errors.append("自动轮询开关必须是 true 或 false")
 
@@ -952,8 +965,7 @@ def api_update_settings() -> Any:
             interval = int(data["polling_interval"])
             if interval < 3 or interval > 300:
                 errors.append("轮询间隔必须在 3-300 秒之间")
-            else:
-                queue_setting_update("polling_interval", str(interval))
+            elif queue_user_polling_update("polling_interval", str(interval)):
                 updated.append("轮询间隔")
         except ValueError:
             errors.append("轮询间隔必须是数字")
@@ -963,8 +975,7 @@ def api_update_settings() -> Any:
             count = int(data["polling_count"])
             if count < 0 or count > 100:
                 errors.append("轮询次数必须在 0-100 次之间（0 表示持续轮询）")
-            else:
-                queue_setting_update("polling_count", str(count))
+            elif queue_user_polling_update("polling_count", str(count)):
                 updated.append("轮询次数")
         except ValueError:
             errors.append("轮询次数必须是数字")

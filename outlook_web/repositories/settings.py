@@ -372,6 +372,100 @@ def get_external_api_disable_pool_stats() -> bool:
     return get_setting("external_api_disable_pool_stats", "false").lower() == "true"
 
 
+USER_POLLING_KEYS = (
+    "enable_auto_polling",
+    "polling_interval",
+    "polling_count",
+)
+_USER_POLLING_DEFAULTS = {
+    "enable_auto_polling": "false",
+    "polling_interval": "10",
+    "polling_count": "5",
+}
+
+
+def get_user_setting(user_id: int, key: str, default: str = "") -> str:
+    """读取指定用户的偏好设置。"""
+    db = None
+    temp_conn = False
+    try:
+        db = get_db()
+    except RuntimeError:
+        db = create_sqlite_connection()
+        temp_conn = True
+    try:
+        row = db.execute(
+            "SELECT value FROM user_settings WHERE user_id = ? AND key = ?",
+            (int(user_id), key),
+        ).fetchone()
+        if row and row["value"] is not None:
+            return str(row["value"])
+        return default
+    finally:
+        if temp_conn and db is not None:
+            db.close()
+
+
+def set_user_setting(user_id: int, key: str, value: str, *, commit: bool = True) -> bool:
+    """写入指定用户的偏好设置。"""
+    db = None
+    temp_conn = False
+    try:
+        db = get_db()
+    except RuntimeError:
+        db = create_sqlite_connection()
+        temp_conn = True
+    try:
+        db.execute(
+            """
+            INSERT INTO user_settings (user_id, key, value, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(user_id, key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (int(user_id), key, value),
+        )
+        if commit:
+            db.commit()
+        return True
+    except Exception:
+        return False
+    finally:
+        if temp_conn and db is not None:
+            db.close()
+
+
+def get_user_polling_settings(user_id: int | None) -> dict[str, str]:
+    """读取当前用户的自动轮询偏好。
+
+    - 有用户偏好：以 user_settings 为准
+    - 无用户偏好：使用内置默认（关闭 / 10 秒 / 5 次），不再跟随全局 settings，
+      避免一个用户改全局后影响其他用户
+    """
+    result = dict(_USER_POLLING_DEFAULTS)
+    if not user_id:
+        return result
+
+    for key in USER_POLLING_KEYS:
+        user_value = get_user_setting(user_id, key, "")
+        if user_value != "":
+            result[key] = user_value
+    return result
+
+
+def set_user_polling_setting(
+    user_id: int,
+    key: str,
+    value: str,
+    *,
+    commit: bool = True,
+) -> bool:
+    if key not in USER_POLLING_KEYS:
+        return False
+    return set_user_setting(user_id, key, value, commit=commit)
+
+
 def get_ui_layout_v2() -> dict:
     """读取前端布局状态"""
     import json

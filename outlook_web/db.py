@@ -40,7 +40,8 @@ from outlook_web.security.crypto import (
 # v24：多用户支持 — users 表 + accounts/groups/tags 增加 user_id 列隔离数据
 # v25：临时邮箱接入邮箱池（temp_emails 新增池生命周期字段：pool_status/claimed_by/...，可被 claim-random 领取）
 # v26：accounts 邮箱唯一性改为按用户隔离 UNIQUE(email, user_id)，允许不同用户导入相同邮箱
-DB_SCHEMA_VERSION = 26
+# v27：user_settings 表 — 自动轮询等偏好按登录用户隔离
+DB_SCHEMA_VERSION = 27
 DB_SCHEMA_VERSION_KEY = "db_schema_version"
 DB_SCHEMA_LAST_UPGRADE_TRACE_ID_KEY = "db_schema_last_upgrade_trace_id"
 DB_SCHEMA_LAST_UPGRADE_ERROR_KEY = "db_schema_last_upgrade_error"
@@ -178,6 +179,17 @@ def init_db(database_path: Optional[str] = None):
                 role TEXT NOT NULL DEFAULT 'user',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # 用户级偏好设置（v27）— 与全局 settings 分离，按 user_id 隔离
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS user_settings (
+                user_id INTEGER NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, key)
             )
         """)
 
@@ -1479,6 +1491,49 @@ def init_db(database_path: Optional[str] = None):
                 cursor.execute(
                     "CREATE INDEX IF NOT EXISTS idx_accounts_user_id ON accounts(user_id)"
                 )
+
+        # v27: 用户级设置表（自动轮询等偏好按登录用户隔离）
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS user_settings (
+                user_id INTEGER NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, key)
+            )
+        """)
+        if current_version < 27:
+            # 将现有全局轮询配置复制到每个已有用户，避免升级后行为突变
+            poll_keys = (
+                "enable_auto_polling",
+                "polling_interval",
+                "polling_count",
+            )
+            defaults = {
+                "enable_auto_polling": "false",
+                "polling_interval": "10",
+                "polling_count": "5",
+            }
+            global_values = {}
+            for key in poll_keys:
+                row = cursor.execute(
+                    "SELECT value FROM settings WHERE key = ?",
+                    (key,),
+                ).fetchone()
+                global_values[key] = (
+                    str(row["value"]) if row and row["value"] is not None else defaults[key]
+                )
+            user_rows = cursor.execute("SELECT id FROM users").fetchall()
+            for user_row in user_rows:
+                uid = int(user_row["id"])
+                for key in poll_keys:
+                    cursor.execute(
+                        """
+                        INSERT OR IGNORE INTO user_settings (user_id, key, value, updated_at)
+                        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                        """,
+                        (uid, key, global_values[key]),
+                    )
 
         # 迁移现有明文数据为加密数据
         migrate_sensitive_data(conn)

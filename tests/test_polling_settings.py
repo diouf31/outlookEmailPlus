@@ -19,7 +19,7 @@ class PollingSettingsTests(unittest.TestCase):
             settings_repo.set_setting("polling_count", "5")
 
     def _login(self, client, password: str = "testpass123"):
-        resp = client.post("/login", json={"password": password})
+        resp = client.post("/login", json={"username": "admin", "password": password})
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(resp.get_json().get("success"))
 
@@ -48,8 +48,14 @@ class PollingSettingsTests(unittest.TestCase):
 
         with self.app.app_context():
             from outlook_web.repositories import settings as settings_repo
+            from outlook_web.security.auth import get_current_user_id
 
-            self.assertEqual(settings_repo.get_setting("polling_count"), "0")
+            # 轮询次数写入当前用户偏好，而不是全局 settings
+            # 在请求外无 user 上下文，直接按 admin 用户读取
+            from outlook_web.db import get_db
+
+            admin_id = get_db().execute("SELECT id FROM users WHERE username='admin'").fetchone()["id"]
+            self.assertEqual(settings_repo.get_user_setting(admin_id, "polling_count"), "0")
 
     def test_put_settings_accepts_positive_polling_count(self):
         client = self.app.test_client()
