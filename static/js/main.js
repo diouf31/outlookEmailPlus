@@ -903,6 +903,9 @@
             await initLayoutState();
 
             closeAllModals();
+            if (typeof restoreMailboxResumeState === 'function') {
+                restoreMailboxResumeState();
+            }
             loadGroups();
             if (typeof loadTags === 'function') {
                 loadTags();

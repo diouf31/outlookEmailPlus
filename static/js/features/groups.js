@@ -23,23 +23,23 @@
                         renderCompactGroupStrip(data.groups, currentGroupId);
                     }
                     updateGroupSelects();
+                    applyMailboxSortButtonState();
 
-                    // 如果之前选中了分组，保持选中状态并刷新邮箱列表
-                    if (currentGroupId) {
-                        const group = groups.find(g => g.id === currentGroupId);
-                        if (group) {
-                            // 刷新当前分组的邮箱列表
-                            if (currentGroupId === tempEmailGroupId) {
-                                loadTempEmails(true);
-                            } else {
-                                await loadAccountsByGroup(currentGroupId, true);
-                            }
+                    // 刷新后优先回到本机上次的分组；分组不存在再退回第一个普通分组
+                    const restoredGroup = currentGroupId
+                        ? groups.find(g => g.id === currentGroupId)
+                        : null;
+
+                    if (restoredGroup && currentPage !== 'temp-emails') {
+                        syncMailboxResumeChrome(restoredGroup);
+                        if (currentGroupId === tempEmailGroupId) {
+                            loadTempEmails(true);
+                        } else {
+                            await loadAccountsByGroup(currentGroupId, true);
+                            await resumeOpenedAccount(currentGroupId);
                         }
                     } else if (currentPage !== 'temp-emails') {
-                        // BUG-06 防御：在临时邮箱页面时，不自动选组。
-                        // 自动选组会调用 selectGroup()，进而清空 currentAccount，
-                        // 导致用户在临时邮箱页选中的邮箱被意外重置。
-                        // 仅在其他页面（mailbox/dashboard 等）才执行首次自动选组。
+                        pendingResumeAccountEmail = '';
                         const firstNormalGroup = groups.find(g => !isTempMailboxGroup(g));
                         if (firstNormalGroup) {
                             selectGroup(firstNormalGroup.id);
@@ -147,6 +147,8 @@
 
             // 更新底部按钮
             updateAccountPanelFooter();
+
+            captureMailboxResume();
 
             // 加载该分组的邮箱
             if (isTempEmailGroup) {
@@ -316,7 +318,7 @@
                                  style="${isFailed ? 'color:var(--clr-danger);' : ''}cursor:pointer;">
                                 ${escapeHtml(acc.email)}
                             </div>
-                            ${acc.remark && acc.remark.trim() ? `<div style="font-size:0.72rem;color:var(--text-muted);margin-top:2px;">📝 ${escapeHtml(translateAppTextLocal('备注'))}: ${escapeHtml(acc.remark)}</div>` : ''}
+                            ${buildAccountRemarkHtml(acc)}
                             <div style="display:flex;flex-wrap:wrap;gap:3px;margin-top:3px;">
                                 ${providerTagHtml}
                                 ${(acc.tags || []).map(tag => `<span class="tag" style="background-color:${tag.color};color:white;">${escapeHtml(tag.name)}</span>`).join('')}
@@ -327,7 +329,7 @@
                     <div class="account-card-bottom">
                         <div class="account-meta">
                             <span class="account-api-tag">${acc.method || defaultMethodLabel}</span>
-                            <span>🕐 ${formatRelativeTime(acc.last_refresh_at)}</span>
+                            <span class="account-activity ${accountLooksUsedWithoutRefresh(acc) ? 'is-used' : ''}">🕐 ${escapeHtml(formatAccountActivityLabel(acc))}</span>
                             ${isFailed ? `<button class="btn btn-sm btn-danger" onclick="event.stopPropagation(); showRefreshError(${acc.id}, '${escapeJs(acc.last_refresh_error || '未知错误')}', '${escapeJs(acc.email)}', '${escapeJs(acc.account_type || 'outlook')}', '${escapeJs(acc.provider || 'outlook')}')" style="padding:1px 6px;font-size:0.65rem;">${escapeHtml(translateAppTextLocal('查看错误'))}</button>` : ''}
                         </div>
                         <div class="account-actions">
@@ -372,6 +374,7 @@
             const totalPages = Number(getAccountListMeta().total_pages || 0);
             if (page < 1 || page > totalPages) return;
             currentAccountPage = page;
+            captureMailboxResume();
             loadAccountsByGroup(currentGroupId, false, page);
             const containers = [
                 document.getElementById('accountList'),
@@ -405,6 +408,7 @@
                 localStorage.setItem('accountPageSize', String(accountPageSize));
             } catch (e) { /* ignore */ }
             currentAccountPage = 1;
+            captureMailboxResume();
             if (currentGroupId) {
                 Object.keys(accountListMetaCache).forEach((key) => delete accountListMetaCache[key]);
                 Object.keys(accountsCache).forEach((key) => delete accountsCache[key]);
@@ -420,6 +424,200 @@
                 }
             } catch (e) { /* ignore */ }
         })();
+
+        // 本机记住：分组、排序、页码、每页条数、当前打开的邮箱
+        let pendingResumeAccountEmail = '';
+        let mailboxResumeReady = false;
+
+        function mailboxResumeStorageKey() {
+            const nameEl = document.querySelector('.user-chip-name');
+            const username = nameEl ? String(nameEl.textContent || '').trim() : '';
+            return `ol_mailbox_resume_v1:${username || 'local'}`;
+        }
+
+        function captureMailboxResume() {
+            if (!mailboxResumeReady) return;
+            const payload = {
+                groupId: currentGroupId || null,
+                sortBy: currentSortBy === 'email' ? 'email' : 'refresh_time',
+                sortOrder: currentSortOrder === 'desc' ? 'desc' : 'asc',
+                page: Math.max(1, Number(currentAccountPage) || 1),
+                pageSize: getAccountPageSize(),
+                accountEmail: String(currentAccount || '').trim(),
+                search: String(currentAccountSearchQuery || '').trim()
+            };
+            try {
+                localStorage.setItem(mailboxResumeStorageKey(), JSON.stringify(payload));
+                localStorage.setItem('accountPageSize', String(payload.pageSize));
+            } catch (e) { /* ignore */ }
+        }
+
+        function restoreMailboxResumeState() {
+            mailboxResumeReady = true;
+            let saved = null;
+            try {
+                saved = JSON.parse(localStorage.getItem(mailboxResumeStorageKey()) || 'null');
+            } catch (e) {
+                saved = null;
+            }
+            if (!saved || typeof saved !== 'object') {
+                applyMailboxSortButtonState();
+                return;
+            }
+
+            if (saved.sortBy === 'email' || saved.sortBy === 'refresh_time') {
+                currentSortBy = saved.sortBy;
+            }
+            if (saved.sortOrder === 'asc' || saved.sortOrder === 'desc') {
+                currentSortOrder = saved.sortOrder;
+            }
+            const page = Number(saved.page);
+            if (Number.isInteger(page) && page >= 1) {
+                currentAccountPage = page;
+            }
+            const pageSize = Number(saved.pageSize);
+            if (ACCOUNT_PAGE_SIZE_OPTIONS.includes(pageSize)) {
+                accountPageSize = pageSize;
+            }
+            const groupId = Number(saved.groupId);
+            if (Number.isInteger(groupId) && groupId > 0) {
+                currentGroupId = groupId;
+            }
+            currentAccountSearchQuery = String(saved.search || '').trim();
+            pendingResumeAccountEmail = String(saved.accountEmail || '').trim();
+            applyMailboxSortButtonState();
+        }
+
+        function applyMailboxSortButtonState() {
+            document.querySelectorAll('.sort-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.sort === currentSortBy);
+            });
+        }
+
+        function syncMailboxResumeChrome(group) {
+            applyMailboxSortButtonState();
+            const searchInput = document.getElementById('globalSearch');
+            if (searchInput && searchInput.value !== currentAccountSearchQuery) {
+                searchInput.value = currentAccountSearchQuery || '';
+            }
+            if (!group) return;
+            const nameEl = document.getElementById('currentGroupName');
+            const colorEl = document.getElementById('currentGroupColor');
+            if (nameEl) nameEl.textContent = formatGroupDisplayName(group.name);
+            if (colorEl) colorEl.style.backgroundColor = group.color || '#666';
+            const importSelect = document.getElementById('importGroupSelect');
+            if (importSelect) importSelect.value = group.id;
+        }
+
+        function scrollOpenedAccountIntoView(email) {
+            const target = String(email || '').trim();
+            if (!target) return;
+            requestAnimationFrame(() => {
+                const cards = document.querySelectorAll('.account-card.active');
+                if (cards.length) {
+                    cards[0].scrollIntoView({ block: 'nearest' });
+                    return;
+                }
+                const rows = document.querySelectorAll('.mail-row');
+                rows.forEach(row => {
+                    if (row.getAttribute('data-email') === target) {
+                        row.scrollIntoView({ block: 'nearest' });
+                    }
+                });
+            });
+        }
+
+        async function fetchAccountPageSnapshot(groupId, page) {
+            const response = await fetch(`/api/accounts?${buildAccountListQueryKey(groupId, page)}`);
+            const data = await response.json();
+            if (!data || !data.success) {
+                return { accounts: [], totalPages: 0 };
+            }
+            return {
+                accounts: Array.isArray(data.accounts) ? data.accounts : [],
+                totalPages: Number((data.pagination || {}).total_pages || 0)
+            };
+        }
+
+        function pageContainsEmail(accounts, email) {
+            const target = String(email || '').trim().toLowerCase();
+            return (accounts || []).some(acc => String((acc && acc.email) || '').trim().toLowerCase() === target);
+        }
+
+        async function locateAccountPage(groupId, email) {
+            const meta = getAccountListMeta(groupId);
+            let totalPages = Number(meta.total_pages || 0);
+            if (totalPages <= 1) return 0;
+
+            const target = String(email || '').trim().toLowerCase();
+            if (currentSortBy === 'email') {
+                let low = 1;
+                let high = totalPages;
+                while (low <= high) {
+                    const mid = Math.floor((low + high) / 2);
+                    const snapshot = await fetchAccountPageSnapshot(groupId, mid);
+                    if (snapshot.totalPages > 0) {
+                        totalPages = snapshot.totalPages;
+                        high = Math.min(high, totalPages);
+                    }
+                    const rows = snapshot.accounts;
+                    if (!rows.length) return 0;
+                    if (pageContainsEmail(rows, email)) return mid;
+                    const first = String(rows[0].email || '').trim().toLowerCase();
+                    const last = String(rows[rows.length - 1].email || '').trim().toLowerCase();
+                    if (currentSortOrder === 'desc') {
+                        if (target > first) high = mid - 1;
+                        else if (target < last) low = mid + 1;
+                        else return 0;
+                    } else if (target < first) {
+                        high = mid - 1;
+                    } else if (target > last) {
+                        low = mid + 1;
+                    } else {
+                        return 0;
+                    }
+                }
+                return 0;
+            }
+
+            const start = Math.max(1, Number(currentAccountPage) || 1);
+            const maxScan = Math.min(totalPages, 12);
+            for (let offset = 1; offset <= maxScan; offset += 1) {
+                const candidates = [start - offset, start + offset].filter(page => page >= 1 && page <= totalPages);
+                for (const page of candidates) {
+                    const snapshot = await fetchAccountPageSnapshot(groupId, page);
+                    if (pageContainsEmail(snapshot.accounts, email)) return page;
+                }
+            }
+            return 0;
+        }
+
+        async function resumeOpenedAccount(groupId) {
+            const email = String(pendingResumeAccountEmail || '').trim();
+            if (!email) return;
+            pendingResumeAccountEmail = '';
+
+            let page = Number(currentAccountPage) || 1;
+            let rows = Array.isArray(accountsCache[groupId]) ? accountsCache[groupId] : [];
+            if (!pageContainsEmail(rows, email)) {
+                const locatedPage = await locateAccountPage(groupId, email);
+                if (!locatedPage) return;
+                page = locatedPage;
+                currentAccountPage = page;
+                await loadAccountsByGroup(groupId, true, page);
+                rows = Array.isArray(accountsCache[groupId]) ? accountsCache[groupId] : [];
+                if (!pageContainsEmail(rows, email)) return;
+            }
+
+            if (typeof selectAccount === 'function') {
+                selectAccount(email);
+            }
+            scrollOpenedAccountIntoView(email);
+        }
+
+        window.addEventListener('pagehide', () => {
+            captureMailboxResume();
+        });
 
         function buildAccountPaginationHtml(pagination) {
             const totalAccounts = Number(pagination.total_count || 0);
@@ -540,7 +738,10 @@
 
             if (currentGroupId) {
                 currentAccountPage = 1;  // 排序时重置到第 1 页
+                captureMailboxResume();
                 loadAccountsByGroup(currentGroupId, true, 1);
+            } else {
+                captureMailboxResume();
             }
         }
 
@@ -553,6 +754,7 @@
         function handleTagFilterChange() {
             if (currentGroupId) {
                 currentAccountPage = 1;  // 标签过滤时重置到第 1 页
+                captureMailboxResume();
                 loadAccountsByGroup(currentGroupId, true, 1);
             }
         }
@@ -577,6 +779,7 @@
 
             if (!currentAccountSearchQuery) {
                 currentAccountPage = 1;  // 清空搜索时重置页码
+                captureMailboxResume();
                 loadAccountsByGroup(currentGroupId, true, 1);
                 return;
             }
@@ -585,6 +788,7 @@
 
             try {
                 currentAccountPage = 1;  // 搜索结果重置到第 1 页
+                captureMailboxResume();
                 await loadAccountsByGroup(currentGroupId, true, 1);
             } catch (error) {
                 console.error('搜索失败:', error);
@@ -817,6 +1021,179 @@
 
         // ==================== 验证码复制功能 ====================
 
+        function parseAccountRemark(remark) {
+            const text = String(remark || '').replace(/\r\n/g, '\n').trim();
+            if (!text) {
+                return { auxEmail: '', auxPassword: '', note: '' };
+            }
+            const lines = text.split('\n');
+            const first = lines[0].trim();
+            const rest = lines.slice(1).join('\n').trim();
+            const matched = first.match(/^辅助邮箱:\s*(.+)$/);
+            if (!matched) {
+                return { auxEmail: '', auxPassword: '', note: text };
+            }
+            const payload = matched[1].trim();
+            const separator = payload.indexOf('----');
+            if (separator >= 0) {
+                return {
+                    auxEmail: payload.slice(0, separator).trim(),
+                    auxPassword: payload.slice(separator + 4),
+                    note: rest,
+                };
+            }
+            return { auxEmail: payload, auxPassword: '', note: rest };
+        }
+
+        function composeAccountRemark(auxEmail, auxPassword, note) {
+            const email = String(auxEmail || '').trim();
+            const password = String(auxPassword || '');
+            const extra = String(note || '').trim();
+            const lines = [];
+            if (email) {
+                lines.push(password ? `辅助邮箱: ${email}----${password}` : `辅助邮箱: ${email}`);
+            }
+            if (extra) {
+                lines.push(extra);
+            }
+            return lines.join('\n');
+        }
+
+        function findCachedAccountById(accountId) {
+            const id = Number(accountId);
+            const caches = accountsCache || {};
+            for (const accounts of Object.values(caches)) {
+                if (!Array.isArray(accounts)) {
+                    continue;
+                }
+                const found = accounts.find(account => Number(account && account.id) === id);
+                if (found) {
+                    return found;
+                }
+            }
+            return null;
+        }
+
+        function formatAccountActivityLabel(acc) {
+            const refreshed = String((acc && acc.last_refresh_at) || '').trim();
+            const code = String((acc && acc.latest_verification_code) || '').trim();
+            const received = String((acc && acc.latest_verification_received_at) || '').trim();
+            if (!refreshed && (code || received)) {
+                const when = received ? formatRelativeTime(received) : '';
+                if (when && when !== '从未刷新' && when !== 'Never refreshed') {
+                    return `${translateAppTextLocal('已接码')} · ${when}`;
+                }
+                return translateAppTextLocal('已接码');
+            }
+            return formatRelativeTime(refreshed);
+        }
+
+        function accountLooksUsedWithoutRefresh(acc) {
+            const refreshed = String((acc && acc.last_refresh_at) || '').trim();
+            const code = String((acc && acc.latest_verification_code) || '').trim();
+            const received = String((acc && acc.latest_verification_received_at) || '').trim();
+            return !refreshed && !!(code || received);
+        }
+
+        function buildAccountRemarkHtml(account) {
+            const parsed = parseAccountRemark(account && account.remark);
+            const accountId = Number(account && account.id);
+            const auxHtml = parsed.auxEmail
+                ? `<div class="account-aux" onclick="event.stopPropagation(); copyAuxMailbox(${accountId})" title="${escapeHtml(translateAppTextLocal('点击复制辅助邮箱'))}">📮 ${escapeHtml(parsed.auxEmail)}${parsed.auxPassword ? ` · ${escapeHtml(translateAppTextLocal('含密码'))}` : ''}</div>`
+                : '';
+            const noteHtml = `<div class="account-note ${parsed.note ? '' : 'is-empty'}" onclick="event.stopPropagation(); editAccountNoteInline(${accountId}, this)" title="${escapeHtml(translateAppTextLocal('点击编辑备注，不会改动辅助邮箱'))}">📝 ${escapeHtml(parsed.note || translateAppTextLocal('添加备注'))}</div>`;
+            return auxHtml + noteHtml;
+        }
+
+        async function copyAuxMailbox(accountId) {
+            const account = findCachedAccountById(accountId);
+            const parsed = parseAccountRemark(account && account.remark);
+            if (!parsed.auxEmail) {
+                return;
+            }
+            const text = parsed.auxPassword ? `${parsed.auxEmail}----${parsed.auxPassword}` : parsed.auxEmail;
+            try {
+                await copyToClipboard(text);
+                showToast(translateAppTextLocal('已复制辅助邮箱'), 'success');
+            } catch (error) {
+                showToast(translateAppTextLocal('复制失败'), 'error');
+            }
+        }
+
+        function editAccountNoteInline(accountId, host) {
+            const account = findCachedAccountById(accountId);
+            if (!account || !host || host.querySelector('input')) {
+                return;
+            }
+            const parsed = parseAccountRemark(account.remark);
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'account-note-input';
+            input.value = parsed.note;
+            input.placeholder = translateAppTextLocal('添加备注');
+            input.maxLength = 120;
+            host.replaceChildren(input);
+            input.focus();
+            input.select();
+
+            let finished = false;
+            const restore = () => {
+                if (finished) {
+                    return;
+                }
+                finished = true;
+                rerenderAccountCaches();
+            };
+            const save = async () => {
+                if (finished) {
+                    return;
+                }
+                finished = true;
+                const nextNote = input.value.trim();
+                if (nextNote === parsed.note) {
+                    rerenderAccountCaches();
+                    return;
+                }
+                const remark = composeAccountRemark(parsed.auxEmail, parsed.auxPassword, nextNote);
+                try {
+                    const response = await fetch(`/api/accounts/${accountId}/remark`, {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ remark }),
+                    });
+                    const result = await response.json();
+                    if (!result.success) {
+                        if (typeof handleApiError === 'function') {
+                            handleApiError(result, '备注更新失败');
+                        } else {
+                            showToast(translateAppTextLocal('备注更新失败'), 'error');
+                        }
+                        rerenderAccountCaches();
+                        return;
+                    }
+                    account.remark = remark;
+                    showToast(translateAppTextLocal('备注已更新'), 'success');
+                    rerenderAccountCaches();
+                } catch (error) {
+                    showToast(translateAppTextLocal('备注更新失败'), 'error');
+                    rerenderAccountCaches();
+                }
+            };
+            input.addEventListener('keydown', (event) => {
+                event.stopPropagation();
+                if (event.key === 'Enter') {
+                    event.preventDefault();
+                    input.blur();
+                } else if (event.key === 'Escape') {
+                    event.preventDefault();
+                    restore();
+                }
+            });
+            input.addEventListener('mousedown', (event) => event.stopPropagation());
+            input.addEventListener('click', (event) => event.stopPropagation());
+            input.addEventListener('blur', () => save());
+        }
+
         function rerenderAccountCaches() {
             if (!Array.isArray(accountsCache[currentGroupId])) {
                 return;
@@ -857,6 +1234,9 @@
                     account.latest_verification_code = String(accountSummary.latest_verification_code || '');
                     account.latest_verification_folder = String(accountSummary.latest_verification_folder || '');
                     account.latest_verification_received_at = String(accountSummary.latest_verification_received_at || '');
+                    if (accountSummary.last_refresh_at) {
+                        account.last_refresh_at = String(accountSummary.last_refresh_at);
+                    }
                     updated = true;
                 });
             });
@@ -902,6 +1282,9 @@
                     }
                     if (verificationData?.subject && !account.latest_email_subject) {
                         account.latest_email_subject = String(verificationData.subject);
+                    }
+                    if (!String(account.last_refresh_at || '').trim()) {
+                        account.last_refresh_at = new Date().toISOString().slice(0, 19).replace('T', ' ');
                     }
                     updated = true;
                 });

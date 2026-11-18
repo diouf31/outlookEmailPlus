@@ -284,8 +284,10 @@
                                 <span class="mail-address">${escapeHtml(account.email || '')}</span>
                                 <div class="mail-meta" title="${escapeHtml(`${providerText} · ${statusText}`)}">
                                     ${escapeHtml(providerText)} · ${escapeHtml(statusText)}
+                                    ${typeof accountLooksUsedWithoutRefresh === 'function' && accountLooksUsedWithoutRefresh(account) ? ` · ${escapeHtml(formatAccountActivityLabel(account))}` : ''}
                                 </div>
                             </button>
+                            ${typeof buildAccountRemarkHtml === 'function' ? buildAccountRemarkHtml(account) : ''}
                         </div>
                         <div class="mail-code" data-label="${escapeHtml(translateCompactText('验证码'))}">
                             <button

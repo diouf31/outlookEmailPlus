@@ -529,6 +529,39 @@ textarea.form-input {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.account-aux,
+.account-note {
+  margin-top: 2px;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.account-aux {
+  color: var(--clr-accent, #2e6b8a);
+}
+.account-note {
+  color: var(--text-muted);
+}
+.account-note.is-empty {
+  opacity: 0.75;
+}
+.account-note-input {
+  width: 100%;
+  margin-top: 2px;
+  font-size: 0.72rem;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+.account-activity.is-used {
+  color: var(--clr-success, #3a7d44);
+}
 .account-group-name { font-size: 0.72rem; color: var(--text-muted); margin-top: 0.15rem; }
 .account-token-badge { position: absolute; top: 0.6rem; right: 0.6rem; }
 

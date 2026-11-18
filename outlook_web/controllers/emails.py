@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from flask import jsonify, request
@@ -79,7 +80,7 @@ def _persist_refresh_token(account: Dict[str, Any], new_refresh_token: str) -> N
 
 
 def _update_account_summary_from_verification(account: Dict[str, Any], data: Dict[str, Any]) -> Dict[str, Any]:
-    return compact_summary_service.update_summary_from_verification(
+    summary = compact_summary_service.update_summary_from_verification(
         int(account["id"]),
         message={
             "id": data.get("matched_email_id") or "",
@@ -92,6 +93,10 @@ def _update_account_summary_from_verification(account: Dict[str, Any], data: Dic
         verification_code=str(data.get("verification_code") or ""),
         folder=str(data.get("folder") or "inbox"),
     )
+    accounts_repo.touch_last_refresh_at(int(account["id"]))
+    refreshed = dict(summary or {})
+    refreshed["last_refresh_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    return refreshed
 
 
 # ==================== 邮件 API ====================

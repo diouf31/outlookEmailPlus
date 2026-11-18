@@ -3,6 +3,9 @@
         // 选择账号
         function selectAccount(email) {
             currentAccount = email;
+            if (typeof captureMailboxResume === 'function') {
+                captureMailboxResume();
+            }
             isTempEmailGroup = false;
             currentFolder = 'inbox';
             currentMethod = 'graph';
@@ -413,7 +416,7 @@
                     refreshTokenInput.value = acc.refresh_token || '';
                     refreshTokenInput.dataset.originalValue = acc.refresh_token || '';
                     document.getElementById('editGroupSelect').value = acc.group_id || 1;
-                    document.getElementById('editRemark').value = acc.remark || '';
+                    fillEditRemarkFields(acc.remark || '');
                     document.getElementById('editStatus').value = acc.status || 'active';
 
                     // IMAP 账号：隐藏 Client ID / Refresh Token，调整密码标签
@@ -447,6 +450,64 @@
             document.getElementById('editAccountModal').classList.remove('show');
         }
 
+        function fillEditRemarkFields(remark) {
+            const parsed = typeof parseAccountRemark === 'function'
+                ? parseAccountRemark(remark)
+                : { auxEmail: '', auxPassword: '', note: String(remark || '') };
+            const auxEmailInput = document.getElementById('editAuxEmail');
+            const auxPasswordInput = document.getElementById('editAuxPassword');
+            if (auxEmailInput) {
+                auxEmailInput.value = parsed.auxEmail || '';
+            }
+            if (auxPasswordInput) {
+                auxPasswordInput.value = parsed.auxPassword || '';
+            }
+            document.getElementById('editRemark').value = parsed.note || '';
+            const line = document.getElementById('editAuxLine');
+            if (!line) {
+                return;
+            }
+            line.replaceChildren();
+            if (!parsed.auxEmail) {
+                line.textContent = translateAppTextLocal('未导入辅助邮箱');
+                return;
+            }
+            const copyText = parsed.auxPassword ? `${parsed.auxEmail}----${parsed.auxPassword}` : parsed.auxEmail;
+            const label = document.createElement('span');
+            label.textContent = parsed.auxPassword
+                ? `${parsed.auxEmail} · ${translateAppTextLocal('含密码')}`
+                : parsed.auxEmail;
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'btn btn-sm btn-secondary';
+            button.style.marginLeft = '8px';
+            button.textContent = translateAppTextLocal('复制');
+            button.addEventListener('click', async () => {
+                try {
+                    await copyToClipboard(copyText);
+                    showToast(translateAppTextLocal('已复制辅助邮箱'), 'success');
+                } catch (error) {
+                    showToast(translateAppTextLocal('复制失败'), 'error');
+                }
+            });
+            line.appendChild(label);
+            line.appendChild(button);
+        }
+
+        function readComposedEditRemark() {
+            const auxEmail = document.getElementById('editAuxEmail');
+            const auxPassword = document.getElementById('editAuxPassword');
+            const note = document.getElementById('editRemark').value.trim();
+            if (typeof composeAccountRemark !== 'function') {
+                return note;
+            }
+            return composeAccountRemark(
+                auxEmail ? auxEmail.value : '',
+                auxPassword ? auxPassword.value : '',
+                note
+            );
+        }
+
         function focusEditRemarkField() {
             const remarkField = document.getElementById('editRemark');
             if (!remarkField) {
@@ -463,7 +524,7 @@
 
         async function updateAccountRemarkOnly() {
             const accountId = document.getElementById('editAccountId').value;
-            const remark = document.getElementById('editRemark').value.trim();
+            const remark = readComposedEditRemark();
 
             if (!accountId) {
                 showToast(translateAppTextLocal('未找到账号'), 'error');
@@ -522,7 +583,7 @@
                 client_id: wantsToUpdateOutlookCredentials ? clientId : '',
                 refresh_token: wantsToUpdateOutlookCredentials ? refreshToken : '',
                 group_id: newGroupId,
-                remark: document.getElementById('editRemark').value.trim(),
+                remark: readComposedEditRemark(),
                 status: document.getElementById('editStatus').value
             };
 

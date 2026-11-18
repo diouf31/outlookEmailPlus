@@ -35,6 +35,14 @@ from outlook_web.services import graph as graph_service
 from outlook_web.services import refresh as refresh_service
 
 
+def _sanitize_remark(text: str, max_length: int = 500) -> str:
+    """保留辅助邮箱原文。备注在页面上另行转义，这里不再做 HTML 转义。"""
+    if not text:
+        return ""
+    text = str(text)[:max_length]
+    return "".join(char for char in text if char.isprintable() or char in "\n\t")
+
+
 def sanitize_input(text: str, max_length: int = 500) -> str:
     """
     净化用户输入，防止XSS攻击
@@ -1413,7 +1421,7 @@ def api_update_account(account_id: int) -> Any:
         group_id = int(data.get("group_id", 1) or 1)
     except Exception:
         group_id = 1
-    remark = sanitize_input(data.get("remark", ""), max_length=200)
+    remark = _sanitize_remark(data.get("remark", ""))
     status = data.get("status", "active")
 
     if not email_addr:
@@ -1514,7 +1522,7 @@ def api_update_account(account_id: int) -> Any:
 def api_update_account_remark(account_id: int) -> Any:
     """仅更新账号备注，不要求重复提交其他字段。"""
     data = request.get_json(silent=True) or {}
-    remark = sanitize_input(data.get("remark", ""), max_length=200)
+    remark = _sanitize_remark(data.get("remark", ""))
 
     existing_account = accounts_repo.get_account_by_id(account_id)
     if not existing_account:

@@ -204,10 +204,15 @@
                     </select>
                 </div>
                 <div class="form-group">
-                    <label class="form-label">备注</label>
-                    <textarea class="form-textarea" id="editRemark" placeholder="可选" rows="3"></textarea>
-                    <div class="form-hint">备注支持单独保存，不会连带修改账号凭据等其他字段。</div>
-                    <div class="form-hint">这里会调用轻量 PATCH 接口，只更新备注本身。</div>
+                    <label class="form-label">辅助邮箱</label>
+                    <div id="editAuxLine" class="form-hint">未导入辅助邮箱</div>
+                    <input type="hidden" id="editAuxEmail">
+                    <input type="hidden" id="editAuxPassword">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">使用备注</label>
+                    <textarea class="form-textarea" id="editRemark" placeholder="例如：已用、注册中。不会改动辅助邮箱" rows="2"></textarea>
+                    <div class="form-hint">这里只写使用备注。辅助邮箱单独保留，保存时不会被覆盖。</div>
                     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
                         <button class="btn btn-sm btn-secondary" type="button" onclick="focusEditRemarkField()">单独编辑备注</button>
                         <button class="btn btn-sm btn-primary" type="button" title="保存备注" onclick="updateAccountRemarkOnly()">仅更新备注</button>
